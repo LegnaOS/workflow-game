@@ -217,18 +217,28 @@ impl WorkflowApp {
                 self.delete_selected();
             }
 
-            // Ctrl+C 复制
-            if modifiers.ctrl && i.key_pressed(Key::C) {
+            // 跨平台修饰键：Mac用Cmd，Windows/Linux用Ctrl
+            let cmd_or_ctrl = modifiers.command || modifiers.ctrl;
+
+            // Ctrl/Cmd+C 复制
+            if cmd_or_ctrl && i.key_pressed(Key::C) {
                 self.copy_selected();
             }
 
-            // Ctrl+V 粘贴
-            if modifiers.ctrl && i.key_pressed(Key::V) {
+            // Ctrl/Cmd+V 粘贴
+            if cmd_or_ctrl && i.key_pressed(Key::V) {
                 self.paste_at_cursor();
             }
 
-            // Ctrl+G 分组
-            if modifiers.ctrl && i.key_pressed(Key::G) {
+            // Ctrl/Cmd+A 全选
+            if cmd_or_ctrl && i.key_pressed(Key::A) {
+                for block in self.workflow.blocks.values_mut() {
+                    block.selected = true;
+                }
+            }
+
+            // Ctrl/Cmd+G 分组
+            if cmd_or_ctrl && i.key_pressed(Key::G) {
                 if modifiers.shift {
                     // 取消分组
                     let groups: Vec<_> = self.workflow.groups.keys().cloned().collect();
@@ -856,10 +866,11 @@ impl WorkflowApp {
                 };
             } else {
                 // 检测连线碰撞
+                let is_multi_select = modifiers.ctrl || modifiers.command;
                 let hit_conn = self.find_connection_at(pointer_pos, canvas_offset);
                 if let Some(conn_id) = hit_conn {
-                    if modifiers.ctrl {
-                        // Ctrl+点击切换选中
+                    if is_multi_select {
+                        // Ctrl/Cmd+点击切换选中
                         if self.selected_connections.contains(&conn_id) {
                             self.selected_connections.remove(&conn_id);
                         } else {
@@ -872,7 +883,7 @@ impl WorkflowApp {
                     }
                     self.workflow.clear_selection();
                 } else {
-                    if !modifiers.ctrl {
+                    if !is_multi_select {
                         self.selected_connections.clear();
                     }
 
@@ -886,13 +897,20 @@ impl WorkflowApp {
                     }
 
                     if let Some(id) = hit_block {
-                        if !modifiers.ctrl {
-                            if !self.workflow.blocks.get(&id).map(|b| b.selected).unwrap_or(false) {
-                                self.workflow.clear_selection();
+                        let is_multi_select = modifiers.ctrl || modifiers.command;
+                        let was_selected = self.workflow.blocks.get(&id).map(|b| b.selected).unwrap_or(false);
+
+                        if is_multi_select {
+                            // Ctrl/Cmd+点击：切换选中状态
+                            if let Some(block) = self.workflow.blocks.get_mut(&id) {
+                                block.selected = !block.selected;
                             }
-                        }
-                        if let Some(block) = self.workflow.blocks.get_mut(&id) {
-                            block.selected = !block.selected || !modifiers.ctrl;
+                        } else {
+                            // 普通点击：单选这个Block（清除其他选择）
+                            self.workflow.clear_selection();
+                            if let Some(block) = self.workflow.blocks.get_mut(&id) {
+                                block.selected = true;
+                            }
                         }
                         self.state = InteractionState::DraggingBlock(id);
                     } else {
