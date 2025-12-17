@@ -649,10 +649,18 @@ impl eframe::App for WorkflowApp {
 
         // 底部属性面板
         egui::TopBottomPanel::bottom("properties")
-            .min_height(60.0)
-            .max_height(200.0)
+            .min_height(40.0)
+            .max_height(300.0)
+            .default_height(80.0)
             .resizable(true)
+            .frame(egui::Frame::side_top_panel(&ctx.style()).inner_margin(egui::Margin::same(4.0)))
             .show(ctx, |ui| {
+                // 拖动提示条
+                ui.horizontal(|ui| {
+                    ui.add_space(ui.available_width() / 2.0 - 20.0);
+                    ui.label(egui::RichText::new("═══").weak().size(8.0));
+                });
+
                 let selected = self.workflow.selected_blocks();
                 if selected.len() == 1 {
                     if let Some(block) = self.workflow.blocks.get(&selected[0]) {
