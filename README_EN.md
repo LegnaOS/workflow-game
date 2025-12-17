@@ -12,6 +12,9 @@ Core idea: break down game logic into Blocks (nodes), each Block is a Lua script
 - Skill/Buff calculations
 - State machines
 - Any logic that can be represented as data flow
+<img width="1403" height="863" alt="image" src="https://github.com/user-attachments/assets/7201603f-72a7-4035-b66b-c1bc7106df32" />
+
+https://github.com/user-attachments/assets/08793b5b-d584-44a1-b641-9e8912ce3061
 
 ## Quick Start
 
