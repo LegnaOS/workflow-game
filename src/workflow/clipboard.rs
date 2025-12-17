@@ -71,6 +71,7 @@ impl Clipboard {
                     from_port: c.from_port.clone(),
                     to_block: *to,
                     to_port: c.to_port.clone(),
+                    selected: false,
                 })
             })
             .collect();

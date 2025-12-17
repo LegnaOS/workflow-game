@@ -5,6 +5,7 @@ use crate::ui::{BlockWidget, Canvas, ConnectionMode, ConnectionWidget, MenuEvent
 use crate::workflow::{Block, BlueprintStorage, Clipboard, Connection, Vec2, Workflow, WorkflowExecutor};
 use anyhow::Result;
 use egui::{CentralPanel, Context, Key, Pos2, SidePanel};
+use std::collections::HashSet;
 use std::path::PathBuf;
 use uuid::Uuid;
 
@@ -47,7 +48,7 @@ pub struct WorkflowApp {
     canvas_rect: egui::Rect,
     logs: Vec<LogEntry>,
     show_log_panel: bool,
-    selected_connection: Option<Uuid>,
+    selected_connections: HashSet<Uuid>,
     box_select_end: Option<Pos2>,
     last_execute_time: std::time::Instant,
     space_pressed: bool,
@@ -109,7 +110,7 @@ impl WorkflowApp {
             canvas_rect: egui::Rect::NOTHING,
             logs,
             show_log_panel: true,
-            selected_connection: None,
+            selected_connections: HashSet::new(),
             box_select_end: None,
             last_execute_time: std::time::Instant::now(),
             space_pressed: false,
@@ -197,11 +198,26 @@ impl WorkflowApp {
                 }
             }
 
-            // Delete 删除
+            // Delete 删除（Block和连线）
             if i.key_pressed(Key::Delete) || i.key_pressed(Key::Backspace) {
-                let selected: Vec<_> = self.workflow.selected_blocks();
-                for id in selected {
-                    self.workflow.remove_block(id);
+                // 删除选中的Block
+                let selected_blocks: Vec<_> = self.workflow.selected_blocks();
+                for id in &selected_blocks {
+                    self.workflow.remove_block(*id);
+                }
+
+                // 删除选中的连线
+                let selected_conns: Vec<_> = self.selected_connections.drain().collect();
+                for conn_id in &selected_conns {
+                    self.workflow.remove_connection(*conn_id);
+                }
+
+                if !selected_blocks.is_empty() || !selected_conns.is_empty() {
+                    self.add_log("INFO", format!(
+                        "删除: {} Block, {} 连线",
+                        selected_blocks.len(),
+                        selected_conns.len()
+                    ));
                 }
             }
 
@@ -330,14 +346,16 @@ impl eframe::App for WorkflowApp {
 
                 ui.label(format!("Blocks: {}", self.workflow.blocks.len()));
 
-                if self.selected_connection.is_some() {
+                if !self.selected_connections.is_empty() {
                     ui.separator();
-                    ui.colored_label(egui::Color32::YELLOW, "连线已选中");
-                    if ui.button("🗑 删除连线").clicked() || ctx.input(|i| i.key_pressed(Key::Delete) || i.key_pressed(Key::Backspace)) {
-                        if let Some(conn_id) = self.selected_connection.take() {
+                    let count = self.selected_connections.len();
+                    ui.colored_label(egui::Color32::YELLOW, format!("连线已选中: {}", count));
+                    if ui.button("🗑 删除连线").clicked() {
+                        let to_remove: Vec<_> = self.selected_connections.drain().collect();
+                        for conn_id in to_remove {
                             self.workflow.remove_connection(conn_id);
-                            self.add_log("INFO", "删除连接".to_string());
                         }
+                        self.add_log("INFO", format!("删除 {} 条连接", count));
                     }
                 }
             });
@@ -498,9 +516,10 @@ impl eframe::App for WorkflowApp {
                                 to_block, to_idx, false, &self.workflow.viewport, canvas_offset
                             );
 
-                            let is_selected = self.selected_connection == Some(*conn_id);
-                            let flow = if self.auto_execute { self.flow_phase } else { 0.0 };
-                            ConnectionWidget::draw_with_flow(&painter, from_pos, to_pos, is_selected, flow);
+                            let is_selected = self.selected_connections.contains(conn_id);
+                            // 使用连线激活强度，而不是全局flow_phase
+                            let activation = self.workflow.get_connection_activation(*conn_id);
+                            ConnectionWidget::draw_with_flow(&painter, from_pos, to_pos, is_selected, activation);
                         }
                     }
                 }
@@ -545,6 +564,9 @@ impl eframe::App for WorkflowApp {
                     log::error!("执行错误: {}", e);
                 }
             }
+
+            // 衰减激活状态（每帧调用，约60fps时0.05表示约20帧淡出）
+            self.workflow.decay_activation(0.03);
         });
 
         // 请求持续重绘
@@ -664,6 +686,8 @@ impl WorkflowApp {
 
         // 左键点击 - 检测端口或Block
         if response.drag_started_by(egui::PointerButton::Primary) {
+            let modifiers = response.ctx.input(|i| i.modifiers);
+
             // 先检测端口碰撞
             if let Some(port_hit) = self.find_port_at(pointer_pos, canvas_offset) {
                 self.state = InteractionState::DraggingConnection {
@@ -674,10 +698,23 @@ impl WorkflowApp {
                 // 检测连线碰撞
                 let hit_conn = self.find_connection_at(pointer_pos, canvas_offset);
                 if let Some(conn_id) = hit_conn {
-                    self.selected_connection = Some(conn_id);
+                    if modifiers.ctrl {
+                        // Ctrl+点击切换选中
+                        if self.selected_connections.contains(&conn_id) {
+                            self.selected_connections.remove(&conn_id);
+                        } else {
+                            self.selected_connections.insert(conn_id);
+                        }
+                    } else {
+                        // 普通点击单选
+                        self.selected_connections.clear();
+                        self.selected_connections.insert(conn_id);
+                    }
                     self.workflow.clear_selection();
                 } else {
-                    self.selected_connection = None;
+                    if !modifiers.ctrl {
+                        self.selected_connections.clear();
+                    }
 
                     // 检测Block碰撞
                     let mut hit_block = None;
@@ -689,14 +726,13 @@ impl WorkflowApp {
                     }
 
                     if let Some(id) = hit_block {
-                        let modifiers = response.ctx.input(|i| i.modifiers);
                         if !modifiers.ctrl {
                             if !self.workflow.blocks.get(&id).map(|b| b.selected).unwrap_or(false) {
                                 self.workflow.clear_selection();
                             }
                         }
                         if let Some(block) = self.workflow.blocks.get_mut(&id) {
-                            block.selected = true;
+                            block.selected = !block.selected || !modifiers.ctrl;
                         }
                         self.state = InteractionState::DraggingBlock(id);
                     } else {
@@ -747,13 +783,16 @@ impl WorkflowApp {
                     }
                 }
                 InteractionState::BoxSelecting { start } => {
-                    // 框选完成，选中框内的Block
+                    // 框选完成，选中框内的Block和连线
                     if let Some(end) = self.box_select_end {
                         let min_x = start.x.min(end.x);
                         let max_x = start.x.max(end.x);
                         let min_y = start.y.min(end.y);
                         let max_y = start.y.max(end.y);
+                        let rect_min = Pos2::new(min_x, min_y);
+                        let rect_max = Pos2::new(max_x, max_y);
 
+                        // 选中框内的Block
                         for block in self.workflow.blocks.values_mut() {
                             let block_screen = Pos2::new(
                                 block.position.x * self.workflow.viewport.zoom + self.workflow.viewport.offset.x + self.canvas_rect.min.x,
@@ -769,6 +808,43 @@ impl WorkflowApp {
                                block_screen.y < max_y && block_end.y > min_y {
                                 block.selected = true;
                             }
+                        }
+
+                        // 选中框内的连线
+                        let conn_hits: Vec<Uuid> = self.workflow.connections.iter()
+                            .filter_map(|(conn_id, conn)| {
+                                if let (Some(from_block), Some(to_block)) = (
+                                    self.workflow.blocks.get(&conn.from_block),
+                                    self.workflow.blocks.get(&conn.to_block),
+                                ) {
+                                    if let Some(from_def) = self.registry.get(&from_block.script_id) {
+                                        if let Some(to_def) = self.registry.get(&to_block.script_id) {
+                                            let from_idx = from_def.outputs.iter()
+                                                .position(|p| p.id == conn.from_port)
+                                                .unwrap_or(0);
+                                            let to_idx = to_def.inputs.iter()
+                                                .position(|p| p.id == conn.to_port)
+                                                .unwrap_or(0);
+
+                                            let from_pos = BlockWidget::get_port_screen_pos(
+                                                from_block, from_idx, true, &self.workflow.viewport, canvas_offset
+                                            );
+                                            let to_pos = BlockWidget::get_port_screen_pos(
+                                                to_block, to_idx, false, &self.workflow.viewport, canvas_offset
+                                            );
+
+                                            if ConnectionWidget::intersects_rect(from_pos, to_pos, rect_min, rect_max) {
+                                                return Some(*conn_id);
+                                            }
+                                        }
+                                    }
+                                }
+                                None
+                            })
+                            .collect();
+
+                        for conn_id in conn_hits {
+                            self.selected_connections.insert(conn_id);
                         }
                     }
                     self.box_select_end = None;
@@ -851,13 +927,24 @@ impl WorkflowApp {
 
     /// 在指定屏幕位置查找连线
     fn find_connection_at(&self, screen_pos: Pos2, canvas_offset: Pos2) -> Option<Uuid> {
-        const HIT_DISTANCE: f32 = 8.0;
+        const HIT_DISTANCE: f32 = 10.0;
 
         for (conn_id, conn) in &self.workflow.connections {
-            let from_block = self.workflow.blocks.get(&conn.from_block)?;
-            let to_block = self.workflow.blocks.get(&conn.to_block)?;
-            let from_def = self.registry.get(&from_block.script_id)?;
-            let to_def = self.registry.get(&to_block.script_id)?;
+            let (from_block, to_block) = match (
+                self.workflow.blocks.get(&conn.from_block),
+                self.workflow.blocks.get(&conn.to_block),
+            ) {
+                (Some(f), Some(t)) => (f, t),
+                _ => continue,
+            };
+
+            let (from_def, to_def) = match (
+                self.registry.get(&from_block.script_id),
+                self.registry.get(&to_block.script_id),
+            ) {
+                (Some(f), Some(t)) => (f, t),
+                _ => continue,
+            };
 
             let from_idx = from_def.outputs.iter()
                 .position(|p| p.id == conn.from_port)
@@ -873,40 +960,12 @@ impl WorkflowApp {
                 to_block, to_idx, false, &self.workflow.viewport, canvas_offset
             );
 
-            // 简单的点到线段距离检测（贝塞尔曲线近似为直线检测）
-            let dist = Self::point_to_bezier_distance(screen_pos, from_pos, to_pos);
-            if dist < HIT_DISTANCE {
+            // 使用 ConnectionWidget 的碰撞检测（支持折线和曲线模式）
+            if ConnectionWidget::hit_test(from_pos, to_pos, screen_pos, HIT_DISTANCE) {
                 return Some(*conn_id);
             }
         }
         None
-    }
-
-    /// 计算点到贝塞尔曲线的近似距离
-    fn point_to_bezier_distance(point: Pos2, start: Pos2, end: Pos2) -> f32 {
-        // 采样贝塞尔曲线上的点，找最近距离
-        let dx = (end.x - start.x).abs() * 0.5;
-        let ctrl1 = Pos2::new(start.x + dx, start.y);
-        let ctrl2 = Pos2::new(end.x - dx, end.y);
-
-        let mut min_dist = f32::MAX;
-        for i in 0..=20 {
-            let t = i as f32 / 20.0;
-            let t2 = t * t;
-            let t3 = t2 * t;
-            let mt = 1.0 - t;
-            let mt2 = mt * mt;
-            let mt3 = mt2 * mt;
-
-            let x = mt3 * start.x + 3.0 * mt2 * t * ctrl1.x + 3.0 * mt * t2 * ctrl2.x + t3 * end.x;
-            let y = mt3 * start.y + 3.0 * mt2 * t * ctrl1.y + 3.0 * mt * t2 * ctrl2.y + t3 * end.y;
-
-            let dist = ((point.x - x).powi(2) + (point.y - y).powi(2)).sqrt();
-            if dist < min_dist {
-                min_dist = dist;
-            }
-        }
-        min_dist
     }
 
     /// 打开文件对话框

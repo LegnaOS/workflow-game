@@ -11,6 +11,8 @@ pub struct Connection {
     pub from_port: String,
     pub to_block: Uuid,
     pub to_port: String,
+    #[serde(default)]
+    pub selected: bool,
 }
 
 impl Connection {
@@ -21,6 +23,7 @@ impl Connection {
             from_port,
             to_block,
             to_port,
+            selected: false,
         }
     }
 }

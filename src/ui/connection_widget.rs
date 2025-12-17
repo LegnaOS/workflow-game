@@ -53,15 +53,21 @@ impl ConnectionWidget {
         Self::draw_line(painter, from, to, color, width, 0.0);
     }
 
-    /// 绘制带流动效果的连线
-    pub fn draw_with_flow(painter: &Painter, from: Pos2, to: Pos2, selected: bool, flow_phase: f32) {
+    /// 绘制带流动效果的连线（支持激活强度）
+    pub fn draw_with_flow(painter: &Painter, from: Pos2, to: Pos2, selected: bool, activation: f32) {
         let base_color = if selected {
             Color32::from_rgb(255, 180, 50)
+        } else if activation > 0.01 {
+            // 激活状态：根据强度显示高亮颜色
+            let glow = (activation * 255.0) as u8;
+            Color32::from_rgb(50 + glow / 2, 180, 100 + glow / 2)
         } else {
             Color32::from_rgb(100, 160, 230)
         };
-        let width = if selected { 3.5 } else { 2.5 };
+        let width = if selected { 3.5 } else if activation > 0.01 { 3.0 } else { 2.5 };
 
+        // 只有激活时才显示流动效果
+        let flow_phase = if activation > 0.01 { activation } else { 0.0 };
         Self::draw_line(painter, from, to, base_color, width, flow_phase);
     }
 
@@ -220,6 +226,107 @@ impl ConnectionWidget {
 
         painter.line_segment([arrow_p1, to], Stroke::new(width, color));
         painter.line_segment([arrow_p2, to], Stroke::new(width, color));
+    }
+
+    // ============ 碰撞检测 ============
+
+    /// 检测点是否在连线附近（用于点击选中）
+    pub fn hit_test(from: Pos2, to: Pos2, point: Pos2, threshold: f32) -> bool {
+        let points = match Self::mode() {
+            ConnectionMode::Bezier => Self::bezier_points(from, to),
+            ConnectionMode::Orthogonal => Self::orthogonal_points(from, to),
+        };
+        Self::point_to_polyline_distance(&points, point) < threshold
+    }
+
+    /// 检测连线是否与矩形相交（用于框选）
+    pub fn intersects_rect(from: Pos2, to: Pos2, rect_min: Pos2, rect_max: Pos2) -> bool {
+        let points = match Self::mode() {
+            ConnectionMode::Bezier => Self::bezier_points(from, to),
+            ConnectionMode::Orthogonal => Self::orthogonal_points(from, to),
+        };
+
+        // 检查每条线段是否与矩形相交
+        for w in points.windows(2) {
+            if Self::line_intersects_rect(w[0], w[1], rect_min, rect_max) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// 点到折线的最短距离
+    fn point_to_polyline_distance(points: &[Pos2], point: Pos2) -> f32 {
+        let mut min_dist = f32::MAX;
+        for w in points.windows(2) {
+            let dist = Self::point_to_segment_distance(point, w[0], w[1]);
+            if dist < min_dist {
+                min_dist = dist;
+            }
+        }
+        min_dist
+    }
+
+    /// 点到线段的距离
+    fn point_to_segment_distance(p: Pos2, a: Pos2, b: Pos2) -> f32 {
+        let ab = Pos2::new(b.x - a.x, b.y - a.y);
+        let ap = Pos2::new(p.x - a.x, p.y - a.y);
+        let ab_len_sq = ab.x * ab.x + ab.y * ab.y;
+
+        if ab_len_sq < 0.0001 {
+            return ((p.x - a.x).powi(2) + (p.y - a.y).powi(2)).sqrt();
+        }
+
+        let t = ((ap.x * ab.x + ap.y * ab.y) / ab_len_sq).clamp(0.0, 1.0);
+        let closest = Pos2::new(a.x + t * ab.x, a.y + t * ab.y);
+        ((p.x - closest.x).powi(2) + (p.y - closest.y).powi(2)).sqrt()
+    }
+
+    /// 线段是否与矩形相交
+    fn line_intersects_rect(a: Pos2, b: Pos2, rect_min: Pos2, rect_max: Pos2) -> bool {
+        // 快速检查：点在矩形内
+        if Self::point_in_rect(a, rect_min, rect_max) || Self::point_in_rect(b, rect_min, rect_max) {
+            return true;
+        }
+
+        // 检查线段与矩形四边的交点
+        let edges = [
+            (Pos2::new(rect_min.x, rect_min.y), Pos2::new(rect_max.x, rect_min.y)), // top
+            (Pos2::new(rect_max.x, rect_min.y), Pos2::new(rect_max.x, rect_max.y)), // right
+            (Pos2::new(rect_max.x, rect_max.y), Pos2::new(rect_min.x, rect_max.y)), // bottom
+            (Pos2::new(rect_min.x, rect_max.y), Pos2::new(rect_min.x, rect_min.y)), // left
+        ];
+
+        for (e1, e2) in edges {
+            if Self::segments_intersect(a, b, e1, e2) {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn point_in_rect(p: Pos2, rect_min: Pos2, rect_max: Pos2) -> bool {
+        p.x >= rect_min.x && p.x <= rect_max.x && p.y >= rect_min.y && p.y <= rect_max.y
+    }
+
+    /// 两线段是否相交
+    fn segments_intersect(a1: Pos2, a2: Pos2, b1: Pos2, b2: Pos2) -> bool {
+        let d1 = Self::cross_product(b2, b1, a1);
+        let d2 = Self::cross_product(b2, b1, a2);
+        let d3 = Self::cross_product(a2, a1, b1);
+        let d4 = Self::cross_product(a2, a1, b2);
+
+        if ((d1 > 0.0 && d2 < 0.0) || (d1 < 0.0 && d2 > 0.0)) &&
+           ((d3 > 0.0 && d4 < 0.0) || (d3 < 0.0 && d4 > 0.0)) {
+            return true;
+        }
+
+        // 共线情况（可以忽略）
+        false
+    }
+
+    fn cross_product(o: Pos2, a: Pos2, b: Pos2) -> f32 {
+        (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x)
     }
 }
 

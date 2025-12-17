@@ -1,5 +1,7 @@
 # WorkflowEngine
 
+[English](README_EN.md) | [Русский](README_RU.md) | 中文
+
 基于可视化节点的游戏逻辑编辑器。用连线代替代码，用 Lua 脚本扩展功能。
 
 ## 这是什么
@@ -156,12 +158,6 @@ src/
 - **egui/eframe** - GUI
 - **mlua** - Lua 5.4 绑定
 - **serde** - 序列化
-
-## 已知问题
-
-- [ ] 复杂工作流执行顺序可能不符合预期
-- [ ] 连线过多时性能下降
-- [ ] 撤销/重做功能不完整
 
 ## License
 

@@ -58,6 +58,8 @@ impl WorkflowExecutor {
         }
 
         for block_id in order {
+            // 激活Block（用于流动动画）
+            workflow.activate_block(block_id);
             self.execute_block(workflow, registry, block_id)?;
         }
 

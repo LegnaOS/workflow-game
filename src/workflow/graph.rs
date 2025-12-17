@@ -2,7 +2,7 @@
 
 use super::{Block, BlockGroup, Connection, Vec2};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use uuid::Uuid;
 
 /// 画布视口
@@ -62,6 +62,12 @@ pub struct Workflow {
     pub execution_order: Vec<Uuid>,
     #[serde(skip)]
     pub dirty_blocks: HashSet<Uuid>,
+
+    /// 最近执行的Block和连线（用于流动动画）
+    #[serde(skip)]
+    pub active_blocks: HashMap<Uuid, f32>,  // block_id -> 激活强度 (0.0-1.0)
+    #[serde(skip)]
+    pub active_connections: HashMap<Uuid, f32>,  // connection_id -> 激活强度 (0.0-1.0)
 }
 
 impl Default for Workflow {
@@ -75,6 +81,8 @@ impl Default for Workflow {
             readonly: false,
             execution_order: Vec::new(),
             dirty_blocks: HashSet::new(),
+            active_blocks: HashMap::new(),
+            active_connections: HashMap::new(),
         }
     }
 }
@@ -180,13 +188,54 @@ impl Workflow {
         }
     }
 
+    /// 激活Block（执行时调用）
+    pub fn activate_block(&mut self, block_id: Uuid) {
+        self.active_blocks.insert(block_id, 1.0);
+        // 激活该Block的所有输出连线
+        let conn_ids: Vec<Uuid> = self.connections.iter()
+            .filter(|(_, c)| c.from_block == block_id)
+            .map(|(id, _)| *id)
+            .collect();
+        for conn_id in conn_ids {
+            self.active_connections.insert(conn_id, 1.0);
+        }
+    }
+
+    /// 衰减激活状态（每帧调用）
+    pub fn decay_activation(&mut self, decay_rate: f32) {
+        // 衰减Block激活
+        self.active_blocks.retain(|_, strength| {
+            *strength -= decay_rate;
+            *strength > 0.01
+        });
+        // 衰减连线激活
+        self.active_connections.retain(|_, strength| {
+            *strength -= decay_rate;
+            *strength > 0.01
+        });
+    }
+
+    /// 获取Block的激活强度
+    pub fn get_block_activation(&self, block_id: Uuid) -> f32 {
+        self.active_blocks.get(&block_id).copied().unwrap_or(0.0)
+    }
+
+    /// 获取连线的激活强度
+    pub fn get_connection_activation(&self, conn_id: Uuid) -> f32 {
+        self.active_connections.get(&conn_id).copied().unwrap_or(0.0)
+    }
+
     /// 更新执行顺序(拓扑排序)
     pub fn update_execution_order(&mut self) {
         self.execution_order = self.topological_sort();
     }
 
-    /// Kahn算法拓扑排序
+    /// Kahn算法拓扑排序（稳定版：按位置排序保证确定性）
     fn topological_sort(&self) -> Vec<Uuid> {
+        if self.blocks.is_empty() {
+            return Vec::new();
+        }
+
         let mut in_degree: HashMap<Uuid, usize> = HashMap::new();
         let mut adjacency: HashMap<Uuid, Vec<Uuid>> = HashMap::new();
 
@@ -198,36 +247,67 @@ impl Workflow {
 
         // 构建图
         for conn in self.connections.values() {
-            if let Some(degree) = in_degree.get_mut(&conn.to_block) {
-                *degree += 1;
-            }
-            if let Some(adj) = adjacency.get_mut(&conn.from_block) {
-                adj.push(conn.to_block);
+            // 只处理有效连接（两端 block 都存在）
+            if self.blocks.contains_key(&conn.from_block) && self.blocks.contains_key(&conn.to_block) {
+                if let Some(degree) = in_degree.get_mut(&conn.to_block) {
+                    *degree += 1;
+                }
+                if let Some(adj) = adjacency.get_mut(&conn.from_block) {
+                    if !adj.contains(&conn.to_block) {
+                        adj.push(conn.to_block);
+                    }
+                }
             }
         }
 
-        // Kahn算法
-        let mut queue: Vec<Uuid> = in_degree
-            .iter()
-            .filter(|(_, &degree)| degree == 0)
-            .map(|(&id, _)| id)
-            .collect();
+        // 使用 BTreeMap 按位置排序，确保相同入度的节点有确定顺序
+        // 排序键：(位置Y, 位置X, UUID) 保证从上到下、从左到右
+        let get_sort_key = |id: &Uuid| -> (i32, i32, Uuid) {
+            if let Some(block) = self.blocks.get(id) {
+                ((block.position.y * 100.0) as i32, (block.position.x * 100.0) as i32, *id)
+            } else {
+                (i32::MAX, i32::MAX, *id)
+            }
+        };
 
-        let mut result = Vec::new();
+        // 收集入度为0的节点，按位置排序
+        let mut queue: VecDeque<Uuid> = {
+            let mut zero_degree: Vec<_> = in_degree
+                .iter()
+                .filter(|(_, &degree)| degree == 0)
+                .map(|(&id, _)| id)
+                .collect();
+            zero_degree.sort_by_key(get_sort_key);
+            zero_degree.into_iter().collect()
+        };
 
-        while let Some(node) = queue.pop() {
+        let mut result = Vec::with_capacity(self.blocks.len());
+
+        while let Some(node) = queue.pop_front() {
             result.push(node);
 
             if let Some(neighbors) = adjacency.get(&node) {
+                // 收集新的零入度节点
+                let mut new_zero_degree = Vec::new();
                 for &neighbor in neighbors {
                     if let Some(degree) = in_degree.get_mut(&neighbor) {
                         *degree -= 1;
                         if *degree == 0 {
-                            queue.push(neighbor);
+                            new_zero_degree.push(neighbor);
                         }
                     }
                 }
+                // 按位置排序后加入队列
+                new_zero_degree.sort_by_key(get_sort_key);
+                for id in new_zero_degree {
+                    queue.push_back(id);
+                }
             }
+        }
+
+        // 检测环：如果结果数量少于节点数量，说明有环
+        if result.len() < self.blocks.len() {
+            log::warn!("工作流存在循环依赖，部分节点未执行");
         }
 
         result
