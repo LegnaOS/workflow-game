@@ -577,32 +577,42 @@ impl WorkflowApp {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
                     ui.set_min_width(120.0);
 
+                    let readonly = self.workflow.readonly;
+
                     match target {
                         ContextMenuTarget::Block(_) => {
                             if ui.button("📋 复制 (Ctrl+C)").clicked() {
                                 self.copy_selected();
                                 self.context_menu_pos = None;
                             }
-                            if ui.button("📥 粘贴 (Ctrl+V)").clicked() {
-                                self.paste_at_cursor();
-                                self.context_menu_pos = None;
-                            }
-                            ui.separator();
-                            if ui.button("🗑 删除 (Delete)").clicked() {
-                                self.delete_selected();
-                                self.context_menu_pos = None;
+                            if !readonly {
+                                if ui.button("📥 粘贴 (Ctrl+V)").clicked() {
+                                    self.paste_at_cursor();
+                                    self.context_menu_pos = None;
+                                }
+                                ui.separator();
+                                if ui.button("🗑 删除 (Delete)").clicked() {
+                                    self.delete_selected();
+                                    self.context_menu_pos = None;
+                                }
                             }
                         }
                         ContextMenuTarget::Connection(_) => {
-                            if ui.button("🗑 删除连线").clicked() {
-                                self.delete_selected();
-                                self.context_menu_pos = None;
+                            if !readonly {
+                                if ui.button("🗑 删除连线").clicked() {
+                                    self.delete_selected();
+                                    self.context_menu_pos = None;
+                                }
+                            } else {
+                                ui.label("🔒 只读模式");
                             }
                         }
                         ContextMenuTarget::Canvas => {
-                            if ui.button("📥 粘贴 (Ctrl+V)").clicked() {
-                                self.paste_at_cursor();
-                                self.context_menu_pos = None;
+                            if !readonly {
+                                if ui.button("📥 粘贴 (Ctrl+V)").clicked() {
+                                    self.paste_at_cursor();
+                                    self.context_menu_pos = None;
+                                }
                             }
                             if ui.button("🔍 全选 (Ctrl+A)").clicked() {
                                 for block in self.workflow.blocks.values_mut() {
@@ -641,6 +651,11 @@ impl WorkflowApp {
 
     /// 粘贴到当前位置
     fn paste_at_cursor(&mut self) {
+        if self.workflow.readonly {
+            self.add_log("WARN", "只读模式，无法粘贴".to_string());
+            return;
+        }
+
         let offset = Vec2::new(50.0, 50.0);
         let (blocks, connections) = self.clipboard.paste(offset);
         let count = blocks.len();
@@ -659,6 +674,11 @@ impl WorkflowApp {
 
     /// 删除选中的Block和连线
     fn delete_selected(&mut self) {
+        if self.workflow.readonly {
+            self.add_log("WARN", "只读模式，无法删除".to_string());
+            return;
+        }
+
         let selected_blocks: Vec<_> = self.workflow.selected_blocks();
         for id in &selected_blocks {
             self.workflow.remove_block(*id);
@@ -799,7 +819,7 @@ impl WorkflowApp {
             }
         }
 
-        // 从菜单拖入Block
+        // 从菜单拖入Block（只读模式禁用）
         if let InteractionState::DraggingFromMenu(ref script_id) = self.state.clone() {
             // 检测鼠标释放（拖拽结束）
             let released = response.ctx.input(|i| {
@@ -807,8 +827,10 @@ impl WorkflowApp {
             });
 
             if released {
-                // 检查鼠标是否在画布区域内
-                if let Some(pos) = response.ctx.pointer_hover_pos() {
+                // 只读模式禁止添加
+                if self.workflow.readonly {
+                    self.add_log("WARN", "只读模式，无法添加Block".to_string());
+                } else if let Some(pos) = response.ctx.pointer_hover_pos() {
                     if response.rect.contains(pos) {
                         if let Some(def) = self.registry.get(&script_id) {
                             let name = def.meta.name.clone();
@@ -885,15 +907,18 @@ impl WorkflowApp {
         // 拖拽Block
         if let InteractionState::DraggingBlock(_) = self.state {
             if response.dragged_by(egui::PointerButton::Primary) {
-                let delta = response.drag_delta();
-                let scale_delta = Vec2::new(
-                    delta.x / self.workflow.viewport.zoom,
-                    delta.y / self.workflow.viewport.zoom,
-                );
-                for block in self.workflow.blocks.values_mut() {
-                    if block.selected {
-                        block.position.x += scale_delta.x;
-                        block.position.y += scale_delta.y;
+                // 只读模式禁止移动Block
+                if !self.workflow.readonly {
+                    let delta = response.drag_delta();
+                    let scale_delta = Vec2::new(
+                        delta.x / self.workflow.viewport.zoom,
+                        delta.y / self.workflow.viewport.zoom,
+                    );
+                    for block in self.workflow.blocks.values_mut() {
+                        if block.selected {
+                            block.position.x += scale_delta.x;
+                            block.position.y += scale_delta.y;
+                        }
                     }
                 }
             }
@@ -988,8 +1013,10 @@ impl WorkflowApp {
                     self.box_select_end = None;
                 }
                 InteractionState::DraggingConnection { from, .. } => {
-                    // 检查是否释放在目标端口上
-                    if let Some(to_port) = self.find_port_at(pointer_pos, canvas_offset) {
+                    // 只读模式禁止创建连线
+                    if self.workflow.readonly {
+                        self.add_log("WARN", "只读模式，无法创建连线".to_string());
+                    } else if let Some(to_port) = self.find_port_at(pointer_pos, canvas_offset) {
                         let mut log_msg: Option<String> = None;
                         // 确保连接方向正确：output -> input
                         if from.is_output && !to_port.is_output && from.block_id != to_port.block_id {
