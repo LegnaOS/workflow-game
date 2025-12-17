@@ -759,33 +759,53 @@ impl eframe::App for WorkflowApp {
                     self.workflow.blocks.get(&conn.from_block),
                     self.workflow.blocks.get(&conn.to_block),
                 ) {
-                    if let Some(from_def) = self.registry.get(&from_block.script_id) {
-                        if let Some(to_def) = self.registry.get(&to_block.script_id) {
-                            let from_idx = from_def.outputs.iter()
-                                .position(|p| p.id == conn.from_port)
-                                .unwrap_or(0);
-                            let to_idx = to_def.inputs.iter()
-                                .position(|p| p.id == conn.to_port)
-                                .unwrap_or(0);
-
-                            let from_pos = BlockWidget::get_port_screen_pos(
-                                from_block, from_idx, true, &self.workflow.viewport, canvas_offset
-                            );
-                            let to_pos = BlockWidget::get_port_screen_pos(
-                                to_block, to_idx, false, &self.workflow.viewport, canvas_offset
-                            );
-
-                            // 视口裁剪：检查连线是否在可见区域
-                            let conn_rect = egui::Rect::from_two_pos(from_pos, to_pos).expand(50.0);
-                            if !conn_rect.intersects(viewport_rect) {
-                                continue;
-                            }
-
-                            let is_selected = self.selected_connections.contains(conn_id);
-                            let activation = self.workflow.get_connection_activation(*conn_id);
-                            ConnectionWidget::draw_with_flow(&painter, from_pos, to_pos, is_selected, activation);
+                    let from_def = match self.registry.get(&from_block.script_id) {
+                        Some(d) => d,
+                        None => {
+                            log::warn!("找不到脚本定义: {}", from_block.script_id);
+                            continue;
                         }
+                    };
+                    let to_def = match self.registry.get(&to_block.script_id) {
+                        Some(d) => d,
+                        None => {
+                            log::warn!("找不到脚本定义: {}", to_block.script_id);
+                            continue;
+                        }
+                    };
+
+                    let from_idx_opt = from_def.outputs.iter()
+                        .position(|p| p.id == conn.from_port);
+                    let to_idx_opt = to_def.inputs.iter()
+                        .position(|p| p.id == conn.to_port);
+
+                    // 如果端口找不到，跳过这条连线（无效连接）
+                    let (from_idx, to_idx) = match (from_idx_opt, to_idx_opt) {
+                        (Some(f), Some(t)) => (f, t),
+                        _ => {
+                            log::warn!("无效连接: {}:{} -> {}:{}",
+                                from_block.script_id, conn.from_port,
+                                to_block.script_id, conn.to_port);
+                            continue;
+                        }
+                    };
+
+                    let from_pos = BlockWidget::get_port_screen_pos(
+                        from_block, from_idx, true, &self.workflow.viewport, canvas_offset
+                    );
+                    let to_pos = BlockWidget::get_port_screen_pos(
+                        to_block, to_idx, false, &self.workflow.viewport, canvas_offset
+                    );
+
+                    // 视口裁剪：检查连线是否在可见区域
+                    let conn_rect = egui::Rect::from_two_pos(from_pos, to_pos).expand(50.0);
+                    if !conn_rect.intersects(viewport_rect) {
+                        continue;
                     }
+
+                    let is_selected = self.selected_connections.contains(conn_id);
+                    let activation = self.workflow.get_connection_activation(*conn_id);
+                    ConnectionWidget::draw_with_flow(&painter, from_pos, to_pos, is_selected, activation);
                 }
             }
 

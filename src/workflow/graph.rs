@@ -348,8 +348,26 @@ impl Workflow {
         }
 
         // 检测环：如果结果数量少于节点数量，说明有环
+        // 游戏中双向交互（如英雄↔Boss）是正常的，仍然需要执行这些节点
         if result.len() < self.blocks.len() {
-            log::warn!("工作流存在循环依赖，部分节点未执行");
+            log::debug!("工作流存在循环依赖，按位置顺序执行循环节点");
+
+            // 收集未处理的节点（循环中的节点）
+            let mut remaining: Vec<_> = self.blocks.keys()
+                .filter(|id| !result.contains(id))
+                .copied()
+                .collect();
+
+            // 按位置排序后加入结果
+            remaining.sort_by_key(|id| {
+                if let Some(block) = self.blocks.get(id) {
+                    ((block.position.y * 100.0) as i32, (block.position.x * 100.0) as i32, *id)
+                } else {
+                    (i32::MAX, i32::MAX, *id)
+                }
+            });
+
+            result.extend(remaining);
         }
 
         result
@@ -454,23 +472,29 @@ impl Workflow {
         }
 
         // 根据依赖关系分配层级（只对连通的Block）
-        for &block_id in &order {
-            if !connected.contains(&block_id) {
-                continue;
-            }
-            let max_parent_level = self.connections.values()
-                .filter(|c| c.to_block == block_id)
-                .filter_map(|c| levels.get(&c.from_block))
-                .max()
-                .copied()
-                .unwrap_or(0);
+        // 多次迭代以处理循环依赖
+        for _ in 0..3 {
+            for &block_id in &order {
+                if !connected.contains(&block_id) {
+                    continue;
+                }
+                let max_parent_level = self.connections.values()
+                    .filter(|c| c.to_block == block_id)
+                    .filter_map(|c| levels.get(&c.from_block))
+                    .max()
+                    .copied()
+                    .unwrap_or(0);
 
-            let level = if in_degree.get(&block_id) == Some(&0) {
-                0
-            } else {
-                max_parent_level + 1
-            };
-            levels.insert(block_id, level);
+                let level = if in_degree.get(&block_id) == Some(&0) {
+                    0
+                } else {
+                    max_parent_level + 1
+                };
+
+                // 只更新为更高的层级（避免循环导致层级减小）
+                let current = levels.get(&block_id).copied().unwrap_or(0);
+                levels.insert(block_id, level.max(current));
+            }
         }
 
         // 按层级分组
