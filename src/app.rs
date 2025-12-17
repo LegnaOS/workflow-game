@@ -591,7 +591,35 @@ impl eframe::App for WorkflowApp {
             }
         });
 
-        // 右侧日志面板
+        // 底部属性面板（先绘制，这样右侧面板可以占据剩余全高）
+        egui::TopBottomPanel::bottom("properties")
+            .resizable(true)
+            .show(ctx, |ui| {
+
+                let selected = self.workflow.selected_blocks();
+                if selected.len() == 1 {
+                    if let Some(block) = self.workflow.blocks.get(&selected[0]) {
+                        if let Some(def) = self.registry.get(&block.script_id) {
+                            let changes = PropertyPanel::draw(ui, block, def);
+                            if !changes.is_empty() {
+                                let block_id = selected[0];
+                                if let Some(block) = self.workflow.blocks.get_mut(&block_id) {
+                                    for change in changes {
+                                        block.properties.insert(change.property_id, change.new_value);
+                                    }
+                                }
+                                self.workflow.mark_dirty(block_id);
+                            }
+                        }
+                    }
+                } else {
+                    ui.centered_and_justified(|ui| {
+                        ui.label(egui::RichText::new("选择Block查看属性").weak().size(11.0));
+                    });
+                }
+            });
+
+        // 右侧日志面板（后绘制，占据底部面板上方的全高）
         if self.show_log_panel {
             SidePanel::right("log_panel")
                 .min_width(200.0)
@@ -646,43 +674,6 @@ impl eframe::App for WorkflowApp {
                         });
                 });
         }
-
-        // 底部属性面板
-        egui::TopBottomPanel::bottom("properties")
-            .min_height(40.0)
-            .max_height(300.0)
-            .default_height(80.0)
-            .resizable(true)
-            .frame(egui::Frame::side_top_panel(&ctx.style()).inner_margin(egui::Margin::same(4.0)))
-            .show(ctx, |ui| {
-                // 拖动提示条
-                ui.horizontal(|ui| {
-                    ui.add_space(ui.available_width() / 2.0 - 20.0);
-                    ui.label(egui::RichText::new("═══").weak().size(8.0));
-                });
-
-                let selected = self.workflow.selected_blocks();
-                if selected.len() == 1 {
-                    if let Some(block) = self.workflow.blocks.get(&selected[0]) {
-                        if let Some(def) = self.registry.get(&block.script_id) {
-                            let changes = PropertyPanel::draw(ui, block, def);
-                            if !changes.is_empty() {
-                                let block_id = selected[0];
-                                if let Some(block) = self.workflow.blocks.get_mut(&block_id) {
-                                    for change in changes {
-                                        block.properties.insert(change.property_id, change.new_value);
-                                    }
-                                }
-                                self.workflow.mark_dirty(block_id);
-                            }
-                        }
-                    }
-                } else {
-                    ui.centered_and_justified(|ui| {
-                        ui.label(egui::RichText::new("选择Block查看属性").weak().size(11.0));
-                    });
-                }
-            });
 
         // 主画布
         CentralPanel::default().show(ctx, |ui| {
