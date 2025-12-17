@@ -55,14 +55,14 @@ return {
         local props = self.properties
         local state = self.state or {}
         
-        -- 从武器获取属性
-        local weapon = inputs.weapon or {}
+        -- 从武器获取属性（确保是表）
+        local weapon = (type(inputs.weapon) == "table") and inputs.weapon or {}
         local weapon_atk = weapon.attack or 0
         local weapon_crit = weapon.crit or 0
         local weapon_dodge = weapon.dodge or 0
-        
-        -- 从防具获取属性
-        local armor = inputs.armor or {}
+
+        -- 从防具获取属性（确保是表）
+        local armor = (type(inputs.armor) == "table") and inputs.armor or {}
         local armor_def = armor.defense or 0
         local armor_hp = armor.hp_bonus or 0
         

@@ -43,7 +43,7 @@ return {
         -- 收集宝石加成
         local gems = { inputs.gem_1, inputs.gem_2, inputs.gem_3 }
         for _, gem in ipairs(gems) do
-            if gem then
+            if gem and type(gem) == "table" then
                 total_atk = total_atk + (gem.attack or 0)
                 total_crit = total_crit + (gem.crit or 0)
                 total_dodge = total_dodge + (gem.dodge or 0)
