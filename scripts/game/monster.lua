@@ -91,6 +91,17 @@ return {
 
         local is_dead = current_hp <= 0
 
+        -- 设置动画：受击时向左闪退
+        if attack_event and current_hp > 0 then
+            state._animation = { x = -20, y = 0, speed = 400 }
+        elseif is_dead then
+            -- 死亡时向下沉
+            state._animation = { x = 0, y = 30, speed = 100 }
+        else
+            -- 恢复原位
+            state._animation = { x = 0, y = 0, speed = 200 }
+        end
+
         -- 保存状态
         state.current_hp = current_hp
         state.dead_ticks = dead_ticks

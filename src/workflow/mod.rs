@@ -6,6 +6,7 @@ mod connection;
 mod executor;
 mod graph;
 mod group;
+mod layer;
 mod storage;
 
 pub use block::*;
@@ -14,5 +15,6 @@ pub use connection::*;
 pub use executor::WorkflowExecutor;
 pub use graph::{Viewport, Workflow};
 pub use group::BlockGroup;
+pub use layer::Layer;
 pub use storage::{BlueprintFormat, BlueprintStorage};
 

@@ -194,9 +194,10 @@ impl BlockWidget {
         }
     }
 
-    /// 获取Block的屏幕位置
+    /// 获取Block的屏幕位置（包含动画偏移）
     fn block_screen_pos(block: &Block, viewport: &Viewport, canvas_offset: Pos2) -> Pos2 {
-        let screen = viewport.canvas_to_screen(block.position);
+        let render_pos = block.render_position();
+        let screen = viewport.canvas_to_screen(render_pos);
         Pos2::new(screen.x + canvas_offset.x, screen.y + canvas_offset.y)
     }
 

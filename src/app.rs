@@ -1,7 +1,7 @@
 //! 应用状态
 
 use crate::script::{ScriptRegistry, ScriptWatcher};
-use crate::ui::{BlockWidget, Canvas, ConnectionMode, ConnectionWidget, MenuEvent, PropertyPanel, SideMenu};
+use crate::ui::{BlockWidget, Canvas, ConnectionMode, ConnectionWidget, LayerEvent, LayerPanel, MenuEvent, PropertyPanel, SideMenu};
 use crate::workflow::{Block, BlueprintStorage, Clipboard, Connection, Vec2, Workflow, WorkflowExecutor};
 use anyhow::Result;
 use egui::{CentralPanel, Context, Key, Pos2, SidePanel};
@@ -78,6 +78,8 @@ pub struct WorkflowApp {
     undo_stack: Vec<HistorySnapshot>,
     redo_stack: Vec<HistorySnapshot>,
     last_snapshot_time: std::time::Instant,
+    // 图层编辑状态
+    editing_layer: Option<(usize, String)>,
 }
 
 /// 右键菜单目标
@@ -152,6 +154,7 @@ impl WorkflowApp {
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             last_snapshot_time: std::time::Instant::now(),
+            editing_layer: None,
         })
     }
 
@@ -382,6 +385,31 @@ impl WorkflowApp {
 
     /// 处理快捷键
     fn handle_shortcuts(&mut self, ctx: &Context) {
+        // 处理图层重命名编辑状态
+        if let Some((index, ref edit_text)) = self.editing_layer.clone() {
+            let enter = ctx.input(|i| i.key_pressed(Key::Enter));
+            let escape = ctx.input(|i| i.key_pressed(Key::Escape));
+
+            if enter {
+                // Enter: 保存编辑
+                let new_name = edit_text.clone();
+                if !new_name.trim().is_empty() {
+                    if let Some(layer) = self.workflow.layers.get_mut(index) {
+                        layer.name = new_name;
+                    }
+                }
+                self.editing_layer = None;
+                return;
+            }
+            if escape {
+                // Escape: 取消编辑
+                self.editing_layer = None;
+                return;
+            }
+            // 编辑状态时不处理其他快捷键
+            return;
+        }
+
         // 处理Block名称编辑状态
         if let InteractionState::EditingBlockName { block_id, ref edit_text } = self.state.clone() {
             let enter = ctx.input(|i| i.key_pressed(Key::Enter));
@@ -476,6 +504,12 @@ impl eframe::App for WorkflowApp {
         // 更新流动效果
         if self.auto_execute {
             self.flow_phase = (self.flow_phase + 0.02) % 1.0;
+        }
+
+        // 更新Block动画（假设60fps，delta_time ≈ 0.016秒）
+        let delta_time = 1.0 / 60.0;
+        for block in self.workflow.blocks.values_mut() {
+            block.update_animation(delta_time);
         }
 
         // 更新连线模式
@@ -588,6 +622,15 @@ impl eframe::App for WorkflowApp {
                         self.state = InteractionState::DraggingFromMenu(script_id);
                     }
                 }
+            }
+
+            ui.add_space(8.0);
+            ui.separator();
+            ui.add_space(4.0);
+
+            // 图层面板
+            if let Some(event) = LayerPanel::draw(ui, &self.workflow, &mut self.editing_layer) {
+                self.handle_layer_event(event);
             }
         });
 
@@ -746,12 +789,13 @@ impl eframe::App for WorkflowApp {
                 }
             }
 
-            // 绘制Block（视口裁剪优化）
+            // 绘制Block（视口裁剪优化，使用render_position包含动画偏移）
             for block in self.workflow.blocks.values() {
-                // 计算Block屏幕位置
+                // 计算Block屏幕位置（包含动画偏移）
+                let render_pos = block.render_position();
                 let screen_pos = Pos2::new(
-                    block.position.x * self.workflow.viewport.zoom + self.workflow.viewport.offset.x + canvas_offset.x,
-                    block.position.y * self.workflow.viewport.zoom + self.workflow.viewport.offset.y + canvas_offset.y,
+                    render_pos.x * self.workflow.viewport.zoom + self.workflow.viewport.offset.x + canvas_offset.x,
+                    render_pos.y * self.workflow.viewport.zoom + self.workflow.viewport.offset.y + canvas_offset.y,
                 );
                 let screen_size = egui::Vec2::new(
                     block.size.x * self.workflow.viewport.zoom,
@@ -766,6 +810,9 @@ impl eframe::App for WorkflowApp {
                     }
                 }
             }
+
+            // 渲染可交互Block的控件（输入框、密码框等）
+            self.render_interactive_widgets(&response.ctx, canvas_offset);
 
             // 显示Block名称编辑框
             if let InteractionState::EditingBlockName { block_id, ref mut edit_text } = &mut self.state {
@@ -985,6 +1032,35 @@ impl WorkflowApp {
                 selected_blocks.len(),
                 selected_conns.len()
             ));
+        }
+    }
+
+    /// 处理图层事件
+    fn handle_layer_event(&mut self, event: LayerEvent) {
+        match event {
+            LayerEvent::GotoLayer(index) => {
+                self.workflow.goto_layer(index);
+                if let Some(layer) = self.workflow.layers.get(index) {
+                    self.add_log("INFO", format!("跳转到图层: {}", layer.name));
+                }
+            }
+            LayerEvent::CreateLayer => {
+                let index = self.workflow.add_layer(format!("图层 {}", self.workflow.layers.len() + 1));
+                self.workflow.current_layer_index = Some(index);
+                self.add_log("INFO", format!("创建图层: {}", self.workflow.layers[index].name));
+            }
+            LayerEvent::DeleteLayer(index) => {
+                if let Some(layer) = self.workflow.layers.get(index) {
+                    let name = layer.name.clone();
+                    self.workflow.remove_layer(index);
+                    self.add_log("INFO", format!("删除图层: {}", name));
+                }
+            }
+            LayerEvent::StartRename(index) => {
+                if let Some(layer) = self.workflow.layers.get(index) {
+                    self.editing_layer = Some((index, layer.name.clone()));
+                }
+            }
         }
     }
 
@@ -1695,5 +1771,123 @@ impl WorkflowApp {
                     }
                 });
             });
+    }
+
+    /// 渲染可交互Block的控件
+    fn render_interactive_widgets(&mut self, ctx: &Context, canvas_offset: Pos2) {
+        use crate::script::WidgetType;
+
+        // 收集需要渲染控件的Block信息
+        let widget_blocks: Vec<(Uuid, Pos2, f32, f32, WidgetType, String)> = self.workflow.blocks.iter()
+            .filter_map(|(id, block)| {
+                self.registry.get(&block.script_id).and_then(|def| {
+                    if def.meta.widget != WidgetType::None {
+                        let render_pos = block.render_position();
+                        let screen_pos = Pos2::new(
+                            render_pos.x * self.workflow.viewport.zoom + self.workflow.viewport.offset.x + canvas_offset.x,
+                            render_pos.y * self.workflow.viewport.zoom + self.workflow.viewport.offset.y + canvas_offset.y,
+                        );
+                        let width = block.size.x * self.workflow.viewport.zoom;
+                        let zoom = self.workflow.viewport.zoom;
+                        Some((*id, screen_pos, width, zoom, def.meta.widget.clone(), def.meta.placeholder.clone()))
+                    } else {
+                        None
+                    }
+                })
+            })
+            .collect();
+
+        // 为每个可交互Block渲染控件
+        for (block_id, screen_pos, width, zoom, widget_type, placeholder) in widget_blocks {
+            let widget_y = screen_pos.y + 28.0 * zoom; // 在header下方
+            let widget_pos = Pos2::new(screen_pos.x + 8.0 * zoom, widget_y + 4.0 * zoom);
+            let widget_width = width - 16.0 * zoom;
+
+            egui::Area::new(egui::Id::new(("widget", block_id)))
+                .fixed_pos(widget_pos)
+                .order(egui::Order::Middle)
+                .show(ctx, |ui| {
+                    ui.set_max_width(widget_width);
+
+                    // 获取当前Block的widget_text（需要后续更新）
+                    let mut text = self.workflow.blocks.get(&block_id)
+                        .map(|b| b.widget_text.clone())
+                        .unwrap_or_default();
+                    let mut checked = self.workflow.blocks.get(&block_id)
+                        .map(|b| b.widget_checked)
+                        .unwrap_or(false);
+                    let mut slider_val = self.workflow.blocks.get(&block_id)
+                        .map(|b| b.widget_slider_value)
+                        .unwrap_or(0.0);
+
+                    let changed = match widget_type {
+                        WidgetType::TextInput => {
+                            let resp = ui.add(
+                                egui::TextEdit::singleline(&mut text)
+                                    .desired_width(widget_width)
+                                    .font(egui::FontId::proportional(11.0 * zoom))
+                                    .hint_text(&placeholder)
+                            );
+                            resp.changed()
+                        }
+                        WidgetType::Password => {
+                            let resp = ui.add(
+                                egui::TextEdit::singleline(&mut text)
+                                    .desired_width(widget_width)
+                                    .font(egui::FontId::proportional(11.0 * zoom))
+                                    .password(true)
+                                    .hint_text(&placeholder)
+                            );
+                            resp.changed()
+                        }
+                        WidgetType::TextArea => {
+                            let resp = ui.add(
+                                egui::TextEdit::multiline(&mut text)
+                                    .desired_width(widget_width)
+                                    .desired_rows(3)
+                                    .font(egui::FontId::proportional(10.0 * zoom))
+                                    .hint_text(&placeholder)
+                            );
+                            resp.changed()
+                        }
+                        WidgetType::Checkbox => {
+                            let resp = ui.checkbox(&mut checked, &placeholder);
+                            resp.changed()
+                        }
+                        WidgetType::Slider => {
+                            let resp = ui.add(
+                                egui::Slider::new(&mut slider_val, 0.0..=100.0)
+                                    .text(&placeholder)
+                            );
+                            resp.changed()
+                        }
+                        WidgetType::Button => {
+                            if ui.button(&placeholder).clicked() {
+                                checked = true;
+                                true
+                            } else {
+                                false
+                            }
+                        }
+                        _ => false,
+                    };
+
+                    // 更新Block的widget状态
+                    if changed {
+                        if let Some(block) = self.workflow.blocks.get_mut(&block_id) {
+                            block.widget_text = text;
+                            block.widget_checked = checked;
+                            block.widget_slider_value = slider_val;
+                            // 将widget值同步到output端口
+                            block.output_values.insert("value".to_string(),
+                                crate::script::Value::String(block.widget_text.clone()));
+                            block.output_values.insert("checked".to_string(),
+                                crate::script::Value::Boolean(block.widget_checked));
+                            block.output_values.insert("slider".to_string(),
+                                crate::script::Value::Number(block.widget_slider_value as f64));
+                        }
+                    }
+                });
+        }
     }
 }

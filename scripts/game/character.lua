@@ -81,6 +81,14 @@ return {
         state.current_mana = current_mana
         self.state = state
 
+        -- 设置动画：当有行动触发时，角色向右移动（攻击动画）
+        if inputs.action_trigger then
+            self.state._animation = { x = 30, y = 0, speed = 300 }
+        else
+            -- 没有行动时回到原位
+            self.state._animation = { x = 0, y = 0, speed = 200 }
+        end
+
         return {
             attack = attack,
             defense = defense,

@@ -42,6 +42,33 @@ pub struct Block {
     pub selected: bool,
     pub collapsed: bool,
     pub group_id: Option<Uuid>,
+
+    // 动画状态（运行时，不序列化）
+    /// 当前动画偏移量
+    #[serde(skip)]
+    pub animation_offset: Vec2,
+    /// 目标动画偏移量（由Lua设置）
+    #[serde(skip)]
+    pub animation_target: Vec2,
+    /// 动画速度（每秒移动的像素距离，0表示瞬移）
+    #[serde(skip)]
+    pub animation_speed: f32,
+
+    /// 交互控件状态（用于输入框等）
+    #[serde(default)]
+    pub widget_text: String,
+    /// 控件是否正在编辑
+    #[serde(skip)]
+    pub widget_editing: bool,
+    /// 下拉选择的索引
+    #[serde(default)]
+    pub widget_selected_index: usize,
+    /// 复选框/按钮状态
+    #[serde(default)]
+    pub widget_checked: bool,
+    /// 滑块值
+    #[serde(default)]
+    pub widget_slider_value: f32,
 }
 
 impl Block {
@@ -77,7 +104,63 @@ impl Block {
             selected: false,
             collapsed: false,
             group_id: None,
+            animation_offset: Vec2::new(0.0, 0.0),
+            animation_target: Vec2::new(0.0, 0.0),
+            animation_speed: 200.0, // 默认速度：200像素/秒
+            widget_text: String::new(),
+            widget_editing: false,
+            widget_selected_index: 0,
+            widget_checked: false,
+            widget_slider_value: 0.0,
         }
+    }
+
+    /// 更新动画（每帧调用）
+    /// 返回true表示动画仍在进行
+    pub fn update_animation(&mut self, delta_time: f32) -> bool {
+        let dx = self.animation_target.x - self.animation_offset.x;
+        let dy = self.animation_target.y - self.animation_offset.y;
+        let distance = (dx * dx + dy * dy).sqrt();
+
+        if distance < 0.5 {
+            // 足够接近，直接到达
+            self.animation_offset = self.animation_target;
+            return false;
+        }
+
+        if self.animation_speed <= 0.0 {
+            // 瞬移
+            self.animation_offset = self.animation_target;
+            return false;
+        }
+
+        // 按速度移动
+        let move_distance = self.animation_speed * delta_time;
+        if move_distance >= distance {
+            self.animation_offset = self.animation_target;
+            return false;
+        }
+
+        let ratio = move_distance / distance;
+        self.animation_offset.x += dx * ratio;
+        self.animation_offset.y += dy * ratio;
+        true
+    }
+
+    /// 设置动画目标（由Lua调用）
+    pub fn set_animation_target(&mut self, x: f32, y: f32, speed: Option<f32>) {
+        self.animation_target = Vec2::new(x, y);
+        if let Some(s) = speed {
+            self.animation_speed = s;
+        }
+    }
+
+    /// 获取渲染位置（包含动画偏移）
+    pub fn render_position(&self) -> Vec2 {
+        Vec2::new(
+            self.position.x + self.animation_offset.x,
+            self.position.y + self.animation_offset.y,
+        )
     }
 
     /// 获取显示名称（自定义名称优先）

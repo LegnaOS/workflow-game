@@ -21,6 +21,10 @@ scripts/
 │   ├── attack.lua      # 攻击
 │   ├── fireball.lua    # 火球术
 │   └── inventory.lua   # 背包
+├── input/          # 交互输入
+│   ├── text_input.lua  # 文本输入
+│   ├── password_input.lua # 密码输入
+│   └── button.lua      # 按钮
 ├── logic/          # 逻辑控制
 │   ├── branch.lua      # 条件分支
 │   ├── compare.lua     # 比较
@@ -321,6 +325,193 @@ return {
     end
 }
 ```
+
+## Block 动画系统
+
+Block 可以通过设置 `self.state._animation` 来实现位置偏移动画效果（如攻击时前冲、受击后退等）。
+
+```lua
+execute = function(self, inputs)
+    -- 设置动画：x/y 为偏移量（像素），speed 为移动速度（像素/秒）
+    if inputs.attack_trigger then
+        -- 攻击时向右移动 30 像素
+        self.state._animation = { x = 30, y = 0, speed = 300 }
+    else
+        -- 没有攻击时回到原位
+        self.state._animation = { x = 0, y = 0, speed = 200 }
+    end
+
+    return { ... }
+end
+```
+
+### 动画参数
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `x` | number | 水平偏移量（正值向右，负值向左） |
+| `y` | number | 垂直偏移量（正值向下，负值向上） |
+| `speed` | number | 移动速度（像素/秒），0 表示瞬移 |
+
+### 示例：角色攻击动画
+
+```lua
+-- 角色攻击时前冲
+if inputs.action_trigger then
+    self.state._animation = { x = 30, y = 0, speed = 300 }
+else
+    self.state._animation = { x = 0, y = 0, speed = 200 }
+end
+```
+
+### 示例：怪物受击动画
+
+```lua
+-- 怪物受击时后退
+if inputs.attack_event then
+    self.state._animation = { x = -20, y = 0, speed = 400 }
+elseif is_dead then
+    -- 死亡时下沉
+    self.state._animation = { x = 0, y = 30, speed = 100 }
+else
+    self.state._animation = { x = 0, y = 0, speed = 200 }
+end
+```
+
+## 可交互 Block
+
+Block 可以包含交互控件（输入框、按钮等），通过在 `meta` 中设置 `widget` 属性启用。
+
+### 控件类型
+
+| widget 值 | 说明 | 用途 |
+|-----------|------|------|
+| `textinput` | 文本输入框 | 用户输入文本 |
+| `password` | 密码输入框 | 密码输入（显示掩码） |
+| `textarea` | 多行文本框 | 长文本输入 |
+| `checkbox` | 复选框 | 开关选项 |
+| `slider` | 滑块 | 数值调节 |
+| `button` | 按钮 | 触发事件 |
+
+### meta 扩展字段
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `widget` | string | 控件类型 |
+| `placeholder` | string | 占位符/提示文字 |
+| `options` | array | 下拉选项（dropdown 类型） |
+
+### 示例：文本输入 Block
+
+```lua
+return {
+    meta = {
+        id = "input.text_input",
+        name = "文本输入",
+        category = "输入",
+        color = "#2196F3",
+        widget = "textinput",           -- 启用文本输入控件
+        placeholder = "请输入文本..."    -- 占位符
+    },
+
+    outputs = {
+        { id = "value", name = "文本值", type = "string", default = "" },
+        { id = "length", name = "文本长度", type = "number", default = 0 }
+    },
+
+    execute = function(self, inputs)
+        -- 控件值自动同步到 output 的 value 端口
+        local text = self.state.widget_text or ""
+        return {
+            value = text,
+            length = string.len(text)
+        }
+    end
+}
+```
+
+### 示例：密码输入 Block
+
+```lua
+return {
+    meta = {
+        id = "input.password",
+        name = "密码输入",
+        color = "#FF5722",
+        widget = "password",
+        placeholder = "请输入密码..."
+    },
+
+    properties = {
+        { id = "min_length", name = "最小长度", type = "number", default = 6 }
+    },
+
+    outputs = {
+        { id = "value", name = "密码值", type = "string", default = "" },
+        { id = "is_valid", name = "有效", type = "boolean", default = false }
+    },
+
+    execute = function(self, inputs)
+        local password = self.state.widget_text or ""
+        local min_len = self.properties.min_length or 6
+        return {
+            value = password,
+            is_valid = string.len(password) >= min_len
+        }
+    end
+}
+```
+
+### 示例：按钮 Block
+
+```lua
+return {
+    meta = {
+        id = "input.button",
+        name = "按钮",
+        color = "#4CAF50",
+        widget = "button",
+        placeholder = "点击执行"
+    },
+
+    outputs = {
+        { id = "clicked", name = "点击事件", type = "event" },
+        { id = "click_count", name = "点击次数", type = "number", default = 0 }
+    },
+
+    execute = function(self, inputs)
+        local state = self.state or {}
+        local count = state.click_count or 0
+        local was_checked = state.last_checked or false
+        local is_checked = self.state.widget_checked or false
+
+        local clicked = is_checked and not was_checked
+        if clicked then
+            count = count + 1
+        end
+
+        state.click_count = count
+        state.last_checked = is_checked
+        self.state = state
+
+        return {
+            clicked = clicked and true or nil,
+            click_count = count
+        }
+    end
+}
+```
+
+## 图层系统
+
+工作流支持多图层，每个图层是画布的一个独立区域。切换图层时视口会自动跳转到该图层的位置。
+
+- **新建图层**：点击左侧图层面板的 "+" 按钮
+- **切换图层**：点击图层名称
+- **重命名**：双击图层名称进入编辑模式
+- **删除图层**：点击图层右侧的 "×" 按钮
+
+图层信息保存在工作流文件中，与 Block 一起持久化。
 
 ## 工作流文件格式
 

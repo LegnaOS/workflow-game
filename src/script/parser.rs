@@ -52,6 +52,8 @@ impl ScriptParser {
     }
 
     fn parse_meta(&self, table: &Table, script_path: &Path) -> Result<BlockMeta> {
+        use crate::script::WidgetType;
+
         let meta: Table = table
             .get("meta")
             .map_err(|_| anyhow!("脚本缺少meta字段: {}", script_path.display()))?;
@@ -76,6 +78,34 @@ impl ScriptParser {
         let icon: String = meta.get("icon").unwrap_or_default();
         let color: String = meta.get("color").unwrap_or_else(|_| "#607D8B".to_string());
 
+        // 解析widget类型
+        let widget_str: String = meta.get("widget").unwrap_or_default();
+        let widget = match widget_str.to_lowercase().as_str() {
+            "textinput" | "text_input" | "input" => WidgetType::TextInput,
+            "password" => WidgetType::Password,
+            "textarea" | "text_area" => WidgetType::TextArea,
+            "slider" => WidgetType::Slider,
+            "checkbox" => WidgetType::Checkbox,
+            "dropdown" | "select" => WidgetType::Dropdown,
+            "button" => WidgetType::Button,
+            _ => WidgetType::None,
+        };
+
+        let placeholder: String = meta.get("placeholder").unwrap_or_default();
+
+        // 解析下拉选项
+        let options: Vec<String> = if let Ok(opts_table) = meta.get::<Table>("options") {
+            let mut opts = Vec::new();
+            for pair in opts_table.pairs::<i64, String>() {
+                if let Ok((_, v)) = pair {
+                    opts.push(v);
+                }
+            }
+            opts
+        } else {
+            Vec::new()
+        };
+
         Ok(BlockMeta {
             id,
             name,
@@ -84,6 +114,9 @@ impl ScriptParser {
             description,
             icon,
             color,
+            widget,
+            placeholder,
+            options,
         })
     }
 

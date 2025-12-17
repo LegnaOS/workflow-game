@@ -62,6 +62,21 @@ impl Value {
     }
 }
 
+/// Block交互控件类型
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum WidgetType {
+    #[default]
+    None,           // 普通Block，无交互控件
+    TextInput,      // 文本输入框
+    Password,       // 密码输入框
+    TextArea,       // 多行文本
+    Slider,         // 滑块
+    Checkbox,       // 复选框
+    Dropdown,       // 下拉选择
+    Button,         // 按钮
+}
+
 /// Block元信息
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlockMeta {
@@ -76,6 +91,15 @@ pub struct BlockMeta {
     pub icon: String,
     #[serde(default = "default_color")]
     pub color: String,
+    /// 交互控件类型
+    #[serde(default)]
+    pub widget: WidgetType,
+    /// 控件占位符文本
+    #[serde(default)]
+    pub placeholder: String,
+    /// 下拉选项（用于Dropdown类型）
+    #[serde(default)]
+    pub options: Vec<String>,
 }
 
 fn default_color() -> String {

@@ -1,6 +1,6 @@
 //! 工作流图
 
-use super::{Block, BlockGroup, Connection, Vec2};
+use super::{Block, BlockGroup, Connection, Layer, Vec2};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use uuid::Uuid;
@@ -53,6 +53,14 @@ pub struct Workflow {
     pub groups: HashMap<Uuid, BlockGroup>,
     pub viewport: Viewport,
 
+    /// 图层列表（画布区域快捷跳转）
+    #[serde(default)]
+    pub layers: Vec<Layer>,
+
+    /// 当前选中的图层索引
+    #[serde(skip)]
+    pub current_layer_index: Option<usize>,
+
     /// 只读模式（可分发版本）
     #[serde(default)]
     pub readonly: bool,
@@ -82,6 +90,8 @@ impl Default for Workflow {
             connections: HashMap::new(),
             groups: HashMap::new(),
             viewport: Viewport::default(),
+            layers: Vec::new(),
+            current_layer_index: None,
             readonly: false,
             password_hash: None,
             execution_order: Vec::new(),
@@ -552,5 +562,81 @@ impl Workflow {
         for group in self.groups.values_mut() {
             group.update_bounds(&positions);
         }
+    }
+
+    // ========== 图层管理 ==========
+
+    /// 添加图层
+    pub fn add_layer(&mut self, name: impl Into<String>) -> usize {
+        let center = Vec2::new(
+            self.viewport.offset.x * -1.0 / self.viewport.zoom + 400.0,
+            self.viewport.offset.y * -1.0 / self.viewport.zoom + 300.0,
+        );
+        let mut layer = Layer::new(name, center, Vec2::new(800.0, 600.0));
+        layer.zoom = self.viewport.zoom;
+        layer.order = self.layers.len();
+        self.layers.push(layer);
+        self.layers.len() - 1
+    }
+
+    /// 删除图层
+    pub fn remove_layer(&mut self, index: usize) {
+        if index < self.layers.len() {
+            self.layers.remove(index);
+            // 更新顺序
+            for (i, layer) in self.layers.iter_mut().enumerate() {
+                layer.order = i;
+            }
+            // 调整当前选中
+            if let Some(current) = self.current_layer_index {
+                if current >= self.layers.len() {
+                    self.current_layer_index = if self.layers.is_empty() {
+                        None
+                    } else {
+                        Some(self.layers.len() - 1)
+                    };
+                }
+            }
+        }
+    }
+
+    /// 重命名图层
+    pub fn rename_layer(&mut self, index: usize, name: impl Into<String>) {
+        if let Some(layer) = self.layers.get_mut(index) {
+            layer.name = name.into();
+        }
+    }
+
+    /// 跳转到图层
+    pub fn goto_layer(&mut self, index: usize) {
+        if let Some(layer) = self.layers.get(index) {
+            // 计算viewport偏移，使图层中心位于屏幕中心
+            // 假设屏幕中心大约在(400, 300)的位置
+            self.viewport.zoom = layer.zoom;
+            self.viewport.offset = Vec2::new(
+                -layer.center.x * layer.zoom + 400.0,
+                -layer.center.y * layer.zoom + 300.0,
+            );
+            self.current_layer_index = Some(index);
+        }
+    }
+
+    /// 更新当前图层的位置（保存当前viewport到图层）
+    pub fn save_current_layer_position(&mut self) {
+        if let Some(index) = self.current_layer_index {
+            if let Some(layer) = self.layers.get_mut(index) {
+                // 从当前viewport反算图层中心
+                layer.center = Vec2::new(
+                    (400.0 - self.viewport.offset.x) / self.viewport.zoom,
+                    (300.0 - self.viewport.offset.y) / self.viewport.zoom,
+                );
+                layer.zoom = self.viewport.zoom;
+            }
+        }
+    }
+
+    /// 获取当前图层
+    pub fn current_layer(&self) -> Option<&Layer> {
+        self.current_layer_index.and_then(|i| self.layers.get(i))
     }
 }

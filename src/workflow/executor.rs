@@ -183,6 +183,14 @@ impl WorkflowExecutor {
                             }
                         }
                     }
+
+                    // 处理动画设置：从state中读取_animation表
+                    if let Ok(animation_table) = updated_state.get::<Table>("_animation") {
+                        let offset_x = animation_table.get::<f32>("x").unwrap_or(0.0);
+                        let offset_y = animation_table.get::<f32>("y").unwrap_or(0.0);
+                        let speed = animation_table.get::<f32>("speed").ok();
+                        block.set_animation_target(offset_x, offset_y, speed);
+                    }
                 }
             }
         }
