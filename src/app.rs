@@ -64,6 +64,18 @@ pub struct WorkflowApp {
     // 流动效果
     flow_phase: f32,
     use_bezier_mode: bool,
+    // 右键菜单
+    context_menu_pos: Option<Pos2>,
+    context_menu_target: ContextMenuTarget,
+}
+
+/// 右键菜单目标
+#[derive(Clone, Default)]
+enum ContextMenuTarget {
+    #[default]
+    Canvas,
+    Block(Uuid),
+    Connection(Uuid),
 }
 
 #[derive(Clone)]
@@ -124,6 +136,8 @@ impl WorkflowApp {
             save_options: SaveOptions::default(),
             flow_phase: 0.0,
             use_bezier_mode: false,
+            context_menu_pos: None,
+            context_menu_target: ContextMenuTarget::Canvas,
         })
     }
 
@@ -198,50 +212,19 @@ impl WorkflowApp {
                 }
             }
 
-            // Delete 删除（Block和连线）
+            // Delete 删除
             if i.key_pressed(Key::Delete) || i.key_pressed(Key::Backspace) {
-                // 删除选中的Block
-                let selected_blocks: Vec<_> = self.workflow.selected_blocks();
-                for id in &selected_blocks {
-                    self.workflow.remove_block(*id);
-                }
-
-                // 删除选中的连线
-                let selected_conns: Vec<_> = self.selected_connections.drain().collect();
-                for conn_id in &selected_conns {
-                    self.workflow.remove_connection(*conn_id);
-                }
-
-                if !selected_blocks.is_empty() || !selected_conns.is_empty() {
-                    self.add_log("INFO", format!(
-                        "删除: {} Block, {} 连线",
-                        selected_blocks.len(),
-                        selected_conns.len()
-                    ));
-                }
+                self.delete_selected();
             }
 
             // Ctrl+C 复制
             if modifiers.ctrl && i.key_pressed(Key::C) {
-                let selected: Vec<_> = self.workflow
-                    .selected_blocks()
-                    .iter()
-                    .filter_map(|id| self.workflow.blocks.get(id))
-                    .collect();
-                let connections: Vec<_> = self.workflow.connections.values().collect();
-                self.clipboard.copy(&selected, &connections);
+                self.copy_selected();
             }
 
             // Ctrl+V 粘贴
             if modifiers.ctrl && i.key_pressed(Key::V) {
-                let (blocks, connections) = self.clipboard.paste(Vec2::new(50.0, 50.0));
-                self.workflow.clear_selection();
-                for block in blocks {
-                    self.workflow.add_block(block);
-                }
-                for conn in connections {
-                    self.workflow.add_connection(conn);
-                }
+                self.paste_at_cursor();
             }
 
             // Ctrl+G 分组
@@ -569,12 +552,132 @@ impl eframe::App for WorkflowApp {
             self.workflow.decay_activation(0.03);
         });
 
+        // 右键菜单
+        self.show_context_menu(ctx);
+
         // 请求持续重绘
         ctx.request_repaint();
     }
 }
 
 impl WorkflowApp {
+    /// 显示右键菜单
+    fn show_context_menu(&mut self, ctx: &Context) {
+        if self.context_menu_pos.is_none() {
+            return;
+        }
+
+        let menu_pos = self.context_menu_pos.unwrap();
+        let target = self.context_menu_target.clone();
+
+        egui::Area::new(egui::Id::new("context_menu"))
+            .fixed_pos(menu_pos)
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.set_min_width(120.0);
+
+                    match target {
+                        ContextMenuTarget::Block(_) => {
+                            if ui.button("📋 复制 (Ctrl+C)").clicked() {
+                                self.copy_selected();
+                                self.context_menu_pos = None;
+                            }
+                            if ui.button("📥 粘贴 (Ctrl+V)").clicked() {
+                                self.paste_at_cursor();
+                                self.context_menu_pos = None;
+                            }
+                            ui.separator();
+                            if ui.button("🗑 删除 (Delete)").clicked() {
+                                self.delete_selected();
+                                self.context_menu_pos = None;
+                            }
+                        }
+                        ContextMenuTarget::Connection(_) => {
+                            if ui.button("🗑 删除连线").clicked() {
+                                self.delete_selected();
+                                self.context_menu_pos = None;
+                            }
+                        }
+                        ContextMenuTarget::Canvas => {
+                            if ui.button("📥 粘贴 (Ctrl+V)").clicked() {
+                                self.paste_at_cursor();
+                                self.context_menu_pos = None;
+                            }
+                            if ui.button("🔍 全选 (Ctrl+A)").clicked() {
+                                for block in self.workflow.blocks.values_mut() {
+                                    block.selected = true;
+                                }
+                                self.context_menu_pos = None;
+                            }
+                        }
+                    }
+                });
+            });
+
+        // 点击其他区域关闭菜单
+        if ctx.input(|i| i.pointer.any_click()) {
+            let click_pos = ctx.input(|i| i.pointer.interact_pos());
+            if let Some(pos) = click_pos {
+                let menu_rect = egui::Rect::from_min_size(menu_pos, egui::vec2(150.0, 100.0));
+                if !menu_rect.contains(pos) {
+                    self.context_menu_pos = None;
+                }
+            }
+        }
+    }
+
+    /// 复制选中的Block
+    fn copy_selected(&mut self) {
+        let selected: Vec<_> = self.workflow
+            .selected_blocks()
+            .iter()
+            .filter_map(|id| self.workflow.blocks.get(id))
+            .collect();
+        let connections: Vec<_> = self.workflow.connections.values().collect();
+        self.clipboard.copy(&selected, &connections);
+        self.add_log("INFO", format!("已复制 {} 个Block", selected.len()));
+    }
+
+    /// 粘贴到当前位置
+    fn paste_at_cursor(&mut self) {
+        let offset = Vec2::new(50.0, 50.0);
+        let (blocks, connections) = self.clipboard.paste(offset);
+        let count = blocks.len();
+        self.workflow.clear_selection();
+        for mut block in blocks {
+            block.selected = true;
+            self.workflow.add_block(block);
+        }
+        for conn in connections {
+            self.workflow.add_connection(conn);
+        }
+        if count > 0 {
+            self.add_log("INFO", format!("已粘贴 {} 个Block", count));
+        }
+    }
+
+    /// 删除选中的Block和连线
+    fn delete_selected(&mut self) {
+        let selected_blocks: Vec<_> = self.workflow.selected_blocks();
+        for id in &selected_blocks {
+            self.workflow.remove_block(*id);
+        }
+
+        let selected_conns: Vec<_> = self.selected_connections.drain().collect();
+        for conn_id in &selected_conns {
+            self.workflow.remove_connection(*conn_id);
+        }
+
+        if !selected_blocks.is_empty() || !selected_conns.is_empty() {
+            self.add_log("INFO", format!(
+                "删除: {} Block, {} 连线",
+                selected_blocks.len(),
+                selected_conns.len()
+            ));
+        }
+    }
+
     fn handle_canvas_interaction(&mut self, response: &egui::Response, canvas_offset: Pos2) {
         let pointer_pos = response.hover_pos().unwrap_or(Pos2::ZERO);
         let canvas_pos = Canvas::pos2_to_vec2(pointer_pos, &self.workflow.viewport, canvas_offset);
@@ -651,13 +754,48 @@ impl WorkflowApp {
             return; // 平移时不处理其他交互
         }
 
-        // ESC或右键取消当前操作
-        let cancel = response.ctx.input(|i| i.key_pressed(Key::Escape))
-            || response.clicked_by(egui::PointerButton::Secondary);
-        if cancel {
+        // ESC取消当前操作
+        if response.ctx.input(|i| i.key_pressed(Key::Escape)) {
             if !matches!(self.state, InteractionState::Idle) {
                 self.state = InteractionState::Idle;
                 return;
+            }
+        }
+
+        // 右键菜单
+        if response.clicked_by(egui::PointerButton::Secondary) {
+            if !matches!(self.state, InteractionState::Idle) {
+                // 取消当前操作
+                self.state = InteractionState::Idle;
+            } else {
+                // 检测右键点击目标
+                self.context_menu_pos = Some(pointer_pos);
+
+                // 先检测Block
+                let mut hit_block = None;
+                for (id, block) in &self.workflow.blocks {
+                    if block.contains(canvas_pos) {
+                        hit_block = Some(*id);
+                        break;
+                    }
+                }
+
+                if let Some(block_id) = hit_block {
+                    self.context_menu_target = ContextMenuTarget::Block(block_id);
+                    // 如果点击的Block未选中，单选它
+                    if !self.workflow.blocks.get(&block_id).map(|b| b.selected).unwrap_or(false) {
+                        self.workflow.clear_selection();
+                        if let Some(b) = self.workflow.blocks.get_mut(&block_id) {
+                            b.selected = true;
+                        }
+                    }
+                } else if let Some(conn_id) = self.find_connection_at(pointer_pos, canvas_offset) {
+                    self.context_menu_target = ContextMenuTarget::Connection(conn_id);
+                    self.selected_connections.clear();
+                    self.selected_connections.insert(conn_id);
+                } else {
+                    self.context_menu_target = ContextMenuTarget::Canvas;
+                }
             }
         }
 

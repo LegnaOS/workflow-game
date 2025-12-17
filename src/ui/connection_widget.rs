@@ -71,7 +71,7 @@ impl ConnectionWidget {
         Self::draw_line(painter, from, to, base_color, width, flow_phase);
     }
 
-    /// 绘制连线（根据模式）
+    /// 绘制连线（根据模式）- 优化版
     fn draw_line(painter: &Painter, from: Pos2, to: Pos2, color: Color32, width: f32, flow_phase: f32) {
         let mode = Self::mode();
         let points = match mode {
@@ -79,14 +79,16 @@ impl ConnectionWidget {
             ConnectionMode::Orthogonal => Self::orthogonal_points(from, to),
         };
 
-        // 绘制阴影（更明显）
-        let shadow_color = Color32::from_rgba_unmultiplied(0, 0, 0, 60);
-        for i in 0..points.len() - 1 {
-            painter.line_segment(
-                [Pos2::new(points[i].x + 2.0, points[i].y + 2.0),
-                 Pos2::new(points[i + 1].x + 2.0, points[i + 1].y + 2.0)],
-                Stroke::new(width + 1.0, shadow_color)
-            );
+        // 只在高亮时绘制阴影（减少渲染开销）
+        if width > 2.5 {
+            let shadow_color = Color32::from_rgba_unmultiplied(0, 0, 0, 40);
+            for i in 0..points.len() - 1 {
+                painter.line_segment(
+                    [Pos2::new(points[i].x + 1.5, points[i].y + 1.5),
+                     Pos2::new(points[i + 1].x + 1.5, points[i + 1].y + 1.5)],
+                    Stroke::new(width + 0.5, shadow_color)
+                );
+            }
         }
 
         // 绘制主线
@@ -94,9 +96,9 @@ impl ConnectionWidget {
             painter.line_segment([points[i], points[i + 1]], Stroke::new(width, color));
         }
 
-        // 流动效果
-        if flow_phase > 0.0 {
-            Self::draw_flow_dots(painter, &points, flow_phase, width);
+        // 流动效果（只在激活时）
+        if flow_phase > 0.01 {
+            Self::draw_flow_dots_fast(painter, &points, flow_phase);
         }
 
         // 绘制箭头
@@ -130,14 +132,16 @@ impl ConnectionWidget {
         }
     }
 
-    /// 生成贝塞尔曲线点
+    /// 生成贝塞尔曲线点（优化：减少分段数）
     fn bezier_points(from: Pos2, to: Pos2) -> Vec<Pos2> {
         let dx = (to.x - from.x).abs();
         let control_offset = (dx * 0.5).max(50.0);
         let control1 = Pos2::new(from.x + control_offset, from.y);
         let control2 = Pos2::new(to.x - control_offset, to.y);
 
-        let segments = 24;
+        // 根据距离动态调整分段数（短连线用更少分段）
+        let dist = ((to.x - from.x).powi(2) + (to.y - from.y).powi(2)).sqrt();
+        let segments = ((dist / 20.0) as i32).clamp(8, 16);
         (0..=segments)
             .map(|i| {
                 let t = i as f32 / segments as f32;
@@ -146,20 +150,31 @@ impl ConnectionWidget {
             .collect()
     }
 
-    /// 绘制流动点
-    fn draw_flow_dots(painter: &Painter, points: &[Pos2], phase: f32, _width: f32) {
-        let total_len = Self::path_length(points);
-        if total_len < 1.0 { return; }
-
-        let dot_spacing = 20.0;
-        let dot_count = (total_len / dot_spacing) as i32;
-
-        for i in 0..dot_count {
-            let t = ((i as f32 * dot_spacing / total_len) + phase) % 1.0;
-            let pos = Self::point_at_t(points, t);
-            let alpha = ((1.0 - t) * 200.0) as u8;
-            painter.circle_filled(pos, 3.0, Color32::from_rgba_unmultiplied(150, 220, 255, alpha));
+    /// 快速绘制流动点（优化版：减少计算）
+    fn draw_flow_dots_fast(painter: &Painter, points: &[Pos2], phase: f32) {
+        // 只绘制3个流动点
+        let glow_color = Color32::from_rgba_unmultiplied(100, 255, 180, (phase * 200.0) as u8);
+        for i in 0..3 {
+            let t = ((i as f32 * 0.33) + phase * 0.5) % 1.0;
+            let pos = Self::point_at_t_fast(points, t);
+            painter.circle_filled(pos, 4.0, glow_color);
         }
+    }
+
+    /// 快速获取路径上t位置的点（无需计算总长度）
+    fn point_at_t_fast(points: &[Pos2], t: f32) -> Pos2 {
+        if points.is_empty() { return Pos2::ZERO; }
+        if points.len() == 1 { return points[0]; }
+
+        // 按点数均匀分布（近似，但快速）
+        let idx = (t * (points.len() - 1) as f32) as usize;
+        let idx = idx.min(points.len() - 2);
+        let local_t = (t * (points.len() - 1) as f32) - idx as f32;
+
+        Pos2::new(
+            points[idx].x + (points[idx + 1].x - points[idx].x) * local_t,
+            points[idx].y + (points[idx + 1].y - points[idx].y) * local_t,
+        )
     }
 
     /// 计算路径长度
