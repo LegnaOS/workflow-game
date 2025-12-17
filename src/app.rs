@@ -330,6 +330,43 @@ impl WorkflowApp {
         }
     }
 
+    /// 紧凑格式化（用于侧边栏日志）
+    fn format_value_compact(value: &crate::script::Value) -> String {
+        use crate::script::Value;
+        match value {
+            Value::Nil => "null".to_string(),
+            Value::Boolean(b) => if *b { "true" } else { "false" }.to_string(),
+            Value::Number(n) => {
+                if n.fract() == 0.0 && n.abs() < 1e10 {
+                    format!("{}", *n as i64)
+                } else {
+                    format!("{:.2}", n)
+                }
+            }
+            Value::String(s) => s.clone(),
+            Value::Array(arr) => {
+                if arr.is_empty() { return "[]".to_string(); }
+                if arr.len() <= 5 {
+                    let items: Vec<String> = arr.iter().map(Self::format_value_compact).collect();
+                    format!("[{}]", items.join(", "))
+                } else {
+                    format!("[...{}项]", arr.len())
+                }
+            }
+            Value::Object(map) => {
+                if map.is_empty() { return "{}".to_string(); }
+                if map.len() <= 3 {
+                    let items: Vec<String> = map.iter()
+                        .map(|(k, v)| format!("{}: {}", k, Self::format_value_compact(v)))
+                        .collect();
+                    format!("{{{}}}", items.join(", "))
+                } else {
+                    format!("{{...{}项}}", map.len())
+                }
+            }
+        }
+    }
+
     /// 处理热重载
     fn handle_hot_reload(&mut self) {
         if let Some(watcher) = &self.watcher {
@@ -498,9 +535,15 @@ impl eframe::App for WorkflowApp {
                 }
 
                 // 自动布局
-                if ui.button("📐 自动布局").clicked() {
+                if ui.button("📐 布局").clicked() {
                     self.workflow.auto_layout();
                     self.add_log("INFO", "已自动布局".to_string());
+                }
+
+                // 显示/隐藏日志
+                let log_text = if self.show_log_panel { "📋" } else { "📋 输出" };
+                if ui.button(log_text).clicked() {
+                    self.show_log_panel = !self.show_log_panel;
                 }
 
                 ui.separator();
@@ -537,7 +580,8 @@ impl eframe::App for WorkflowApp {
         self.draw_password_dialog(ctx);
 
         // 侧边菜单
-        SidePanel::left("menu").min_width(180.0).show(ctx, |ui| {
+        // 左侧Block菜单
+        SidePanel::left("menu").min_width(160.0).show(ctx, |ui| {
             if let Some(event) = SideMenu::draw(ui, &self.registry) {
                 match event {
                     MenuEvent::DragBlock(script_id) => {
@@ -547,116 +591,53 @@ impl eframe::App for WorkflowApp {
             }
         });
 
-        // 属性面板
-        SidePanel::right("properties").min_width(200.0).show(ctx, |ui| {
-            let selected = self.workflow.selected_blocks();
-            if selected.len() == 1 {
-                if let Some(block) = self.workflow.blocks.get(&selected[0]) {
-                    if let Some(def) = self.registry.get(&block.script_id) {
-                        let changes = PropertyPanel::draw(ui, block, def);
-                        // 应用属性变更
-                        if !changes.is_empty() {
-                            let block_id = selected[0];
-                            if let Some(block) = self.workflow.blocks.get_mut(&block_id) {
-                                for change in changes {
-                                    block.properties.insert(change.property_id, change.new_value);
-                                }
-                            }
-                            self.workflow.mark_dirty(block_id);
-                        }
-                    }
-                }
-            } else {
-                ui.label("选择一个Block查看属性");
-            }
-        });
-
-        // 底部日志面板
+        // 右侧日志面板
         if self.show_log_panel {
-            egui::TopBottomPanel::bottom("log_panel")
-                .min_height(100.0)
-                .max_height(300.0)
+            SidePanel::right("log_panel")
+                .min_width(200.0)
+                .max_width(400.0)
                 .resizable(true)
                 .show(ctx, |ui| {
                     ui.horizontal(|ui| {
-                        ui.heading("📋 Block输出");
+                        ui.strong("📋 输出");
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.button("✕ 隐藏").clicked() {
+                            if ui.small_button("✕").clicked() {
                                 self.show_log_panel = false;
                             }
                         });
                     });
                     ui.separator();
 
-                    // 水平滚动 + 垂直滚动
-                    egui::ScrollArea::both()
+                    egui::ScrollArea::vertical()
                         .auto_shrink([false; 2])
                         .show(ui, |ui| {
-                            // 使用等宽字体显示日志
-                            let available_width = ui.available_width();
-
-                            // 显示每个Block的输出值
                             for block in self.workflow.blocks.values() {
                                 if let Some(def) = self.registry.get(&block.script_id) {
-                                    // 使用自定义名称
                                     let display_name = block.display_name(def);
                                     let header_id = egui::Id::new(block.id).with("log_header");
 
-                                    egui::CollapsingHeader::new(format!("📦 {}", display_name))
+                                    egui::CollapsingHeader::new(
+                                        egui::RichText::new(display_name).size(11.0)
+                                    )
                                         .id_salt(header_id)
                                         .default_open(true)
                                         .show(ui, |ui| {
-                                            // 设置最小宽度确保换行
-                                            ui.set_min_width(available_width - 20.0);
-
-                                            // 显示输出
+                                            ui.spacing_mut().item_spacing.y = 2.0;
                                             for output in &def.outputs {
                                                 if let Some(value) = block.output_values.get(&output.id) {
-                                                    let val_str = Self::format_value_pretty(value);
+                                                    let val_str = Self::format_value_compact(value);
                                                     ui.horizontal_wrapped(|ui| {
-                                                        ui.colored_label(egui::Color32::from_rgb(100, 180, 255), format!("{}:", output.name));
+                                                        ui.colored_label(
+                                                            egui::Color32::from_rgb(100, 160, 220),
+                                                            egui::RichText::new(format!("{}:", output.name)).size(10.0)
+                                                        );
+                                                        ui.add(egui::Label::new(
+                                                            egui::RichText::new(&val_str)
+                                                                .monospace()
+                                                                .size(10.0)
+                                                                .color(egui::Color32::from_rgb(180, 200, 180))
+                                                        ).wrap());
                                                     });
-                                                    // 使用代码框显示值，支持换行
-                                                    egui::Frame::none()
-                                                        .fill(egui::Color32::from_rgb(30, 30, 35))
-                                                        .rounding(4.0)
-                                                        .inner_margin(egui::Margin::same(6.0))
-                                                        .show(ui, |ui| {
-                                                            ui.set_min_width(available_width - 40.0);
-                                                            ui.add(egui::Label::new(
-                                                                egui::RichText::new(&val_str)
-                                                                    .monospace()
-                                                                    .size(11.0)
-                                                                    .color(egui::Color32::from_rgb(200, 220, 200))
-                                                            ).wrap());
-                                                        });
-                                                    ui.add_space(4.0);
-                                                }
-                                            }
-
-                                            // 显示状态
-                                            if !block.state.is_empty() {
-                                                ui.separator();
-                                                ui.colored_label(egui::Color32::from_rgb(255, 180, 100), "状态:");
-                                                for (key, value) in &block.state {
-                                                    let val_str = Self::format_value_pretty(value);
-                                                    ui.horizontal_wrapped(|ui| {
-                                                        ui.colored_label(egui::Color32::from_rgb(255, 100, 100), format!("  {}:", key));
-                                                    });
-                                                    egui::Frame::none()
-                                                        .fill(egui::Color32::from_rgb(35, 30, 30))
-                                                        .rounding(4.0)
-                                                        .inner_margin(egui::Margin::same(6.0))
-                                                        .show(ui, |ui| {
-                                                            ui.set_min_width(available_width - 40.0);
-                                                            ui.add(egui::Label::new(
-                                                                egui::RichText::new(&val_str)
-                                                                    .monospace()
-                                                                    .size(11.0)
-                                                                    .color(egui::Color32::from_rgb(220, 200, 200))
-                                                            ).wrap());
-                                                        });
-                                                    ui.add_space(2.0);
                                                 }
                                             }
                                         });
@@ -666,16 +647,37 @@ impl eframe::App for WorkflowApp {
                 });
         }
 
+        // 底部属性面板
+        egui::TopBottomPanel::bottom("properties")
+            .min_height(60.0)
+            .max_height(200.0)
+            .resizable(true)
+            .show(ctx, |ui| {
+                let selected = self.workflow.selected_blocks();
+                if selected.len() == 1 {
+                    if let Some(block) = self.workflow.blocks.get(&selected[0]) {
+                        if let Some(def) = self.registry.get(&block.script_id) {
+                            let changes = PropertyPanel::draw(ui, block, def);
+                            if !changes.is_empty() {
+                                let block_id = selected[0];
+                                if let Some(block) = self.workflow.blocks.get_mut(&block_id) {
+                                    for change in changes {
+                                        block.properties.insert(change.property_id, change.new_value);
+                                    }
+                                }
+                                self.workflow.mark_dirty(block_id);
+                            }
+                        }
+                    }
+                } else {
+                    ui.centered_and_justified(|ui| {
+                        ui.label(egui::RichText::new("选择Block查看属性").weak().size(11.0));
+                    });
+                }
+            });
+
         // 主画布
         CentralPanel::default().show(ctx, |ui| {
-            // 显示日志面板按钮（如果隐藏）
-            if !self.show_log_panel {
-                ui.horizontal(|ui| {
-                    if ui.small_button("显示输出").clicked() {
-                        self.show_log_panel = true;
-                    }
-                });
-            }
             let (response, painter) = ui.allocate_painter(
                 ui.available_size(),
                 egui::Sense::click_and_drag(),
