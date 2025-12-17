@@ -1,0 +1,1091 @@
+//! 应用状态
+
+use crate::script::{ScriptRegistry, ScriptWatcher};
+use crate::ui::{BlockWidget, Canvas, ConnectionMode, ConnectionWidget, MenuEvent, PropertyPanel, SideMenu};
+use crate::workflow::{Block, BlueprintStorage, Clipboard, Connection, Vec2, Workflow, WorkflowExecutor};
+use anyhow::Result;
+use egui::{CentralPanel, Context, Key, Pos2, SidePanel};
+use std::path::PathBuf;
+use uuid::Uuid;
+
+/// 正在拖拽的端口信息
+#[derive(Debug, Clone)]
+struct DraggingPort {
+    block_id: Uuid,
+    port_id: String,
+    is_output: bool,
+    port_index: usize,
+}
+
+/// 交互状态
+#[derive(Debug, Clone, Default)]
+enum InteractionState {
+    #[default]
+    Idle,
+    DraggingBlock(Uuid),
+    Panning,
+    BoxSelecting { start: Pos2 },
+    DraggingFromMenu(String),
+    DraggingConnection { from: DraggingPort, mouse_pos: Pos2 },
+}
+
+/// 日志条目
+#[derive(Clone)]
+struct LogEntry {
+    level: String,
+    message: String,
+}
+
+/// 主应用
+pub struct WorkflowApp {
+    registry: ScriptRegistry,
+    watcher: Option<ScriptWatcher>,
+    workflow: Workflow,
+    executor: WorkflowExecutor,
+    clipboard: Clipboard,
+    state: InteractionState,
+    canvas_rect: egui::Rect,
+    logs: Vec<LogEntry>,
+    show_log_panel: bool,
+    selected_connection: Option<Uuid>,
+    box_select_end: Option<Pos2>,
+    last_execute_time: std::time::Instant,
+    space_pressed: bool,
+    auto_execute: bool,
+    execution_speed: f32,
+    // 文件对话框状态
+    show_save_dialog: bool,
+    show_password_dialog: bool,
+    password_input: String,
+    pending_operation: Option<FileOperation>,
+    current_file_path: Option<std::path::PathBuf>,
+    save_options: SaveOptions,
+    // 流动效果
+    flow_phase: f32,
+    use_bezier_mode: bool,
+}
+
+#[derive(Clone)]
+enum FileOperation {
+    Save(std::path::PathBuf),
+    SaveDual(std::path::PathBuf),
+    Load(std::path::PathBuf),
+}
+
+/// 保存选项
+#[derive(Clone, Default)]
+struct SaveOptions {
+    encrypted: bool,
+    readonly: bool,
+    dual_save: bool,
+}
+
+impl WorkflowApp {
+    pub fn new(script_dir: PathBuf) -> Result<Self> {
+        let registry = ScriptRegistry::new(&script_dir)?;
+        let watcher = ScriptWatcher::new(&script_dir).ok();
+        let executor = WorkflowExecutor::new()?;
+
+        // 收集加载信息
+        let mut logs = Vec::new();
+        logs.push(LogEntry {
+            level: "INFO".to_string(),
+            message: format!("脚本目录: {}", script_dir.display()),
+        });
+        for def in registry.all() {
+            logs.push(LogEntry {
+                level: "INFO".to_string(),
+                message: format!("已加载: [{}] {}", def.meta.category, def.meta.name),
+            });
+        }
+
+        Ok(Self {
+            registry,
+            watcher,
+            workflow: Workflow::new("新工作流"),
+            executor,
+            clipboard: Clipboard::new(),
+            state: InteractionState::Idle,
+            canvas_rect: egui::Rect::NOTHING,
+            logs,
+            show_log_panel: true,
+            selected_connection: None,
+            box_select_end: None,
+            last_execute_time: std::time::Instant::now(),
+            space_pressed: false,
+            auto_execute: true,
+            execution_speed: 10.0,
+            show_save_dialog: false,
+            show_password_dialog: false,
+            password_input: String::new(),
+            pending_operation: None,
+            current_file_path: None,
+            save_options: SaveOptions::default(),
+            flow_phase: 0.0,
+            use_bezier_mode: false,
+        })
+    }
+
+    /// 执行工作流（自动调用）
+    fn run_workflow(&mut self) {
+        // 标记所有block为脏，触发执行
+        let all_ids: Vec<Uuid> = self.workflow.blocks.keys().cloned().collect();
+        for id in all_ids {
+            self.workflow.mark_dirty(id);
+        }
+
+        if let Err(e) = self.executor.execute_dirty(&mut self.workflow, &self.registry) {
+            self.add_log("ERROR", format!("执行错误: {}", e));
+        }
+    }
+
+    /// 添加日志
+    fn add_log(&mut self, level: &str, message: String) {
+        self.logs.push(LogEntry {
+            level: level.to_string(),
+            message,
+        });
+        // 保持最多100条
+        if self.logs.len() > 100 {
+            self.logs.remove(0);
+        }
+    }
+
+    /// 格式化值为JSON风格字符串
+    fn format_value_json(value: &crate::script::Value) -> String {
+        use crate::script::Value;
+        match value {
+            Value::Nil => "null".to_string(),
+            Value::Boolean(b) => if *b { "true" } else { "false" }.to_string(),
+            Value::Number(n) => format!("{}", n),
+            Value::String(s) => format!("\"{}\"", s),
+            Value::Array(arr) => {
+                let items: Vec<String> = arr.iter().map(Self::format_value_json).collect();
+                format!("[{}]", items.join(", "))
+            }
+            Value::Object(map) => {
+                let items: Vec<String> = map.iter()
+                    .map(|(k, v)| format!("\"{}\": {}", k, Self::format_value_json(v)))
+                    .collect();
+                format!("{{{}}}", items.join(", "))
+            }
+        }
+    }
+
+    /// 处理热重载
+    fn handle_hot_reload(&mut self) {
+        if let Some(watcher) = &self.watcher {
+            let changed = watcher.poll_changes();
+            for path in changed {
+                log::info!("热重载: {}", path.display());
+                if let Err(e) = self.registry.reload_script(&path) {
+                    log::error!("重载失败: {}", e);
+                }
+            }
+        }
+    }
+
+    /// 处理快捷键
+    fn handle_shortcuts(&mut self, ctx: &Context) {
+        let modifiers = ctx.input(|i| i.modifiers);
+
+        ctx.input(|i| {
+            // Ctrl+A 全选
+            if modifiers.ctrl && i.key_pressed(Key::A) {
+                for block in self.workflow.blocks.values_mut() {
+                    block.selected = true;
+                }
+            }
+
+            // Delete 删除
+            if i.key_pressed(Key::Delete) || i.key_pressed(Key::Backspace) {
+                let selected: Vec<_> = self.workflow.selected_blocks();
+                for id in selected {
+                    self.workflow.remove_block(id);
+                }
+            }
+
+            // Ctrl+C 复制
+            if modifiers.ctrl && i.key_pressed(Key::C) {
+                let selected: Vec<_> = self.workflow
+                    .selected_blocks()
+                    .iter()
+                    .filter_map(|id| self.workflow.blocks.get(id))
+                    .collect();
+                let connections: Vec<_> = self.workflow.connections.values().collect();
+                self.clipboard.copy(&selected, &connections);
+            }
+
+            // Ctrl+V 粘贴
+            if modifiers.ctrl && i.key_pressed(Key::V) {
+                let (blocks, connections) = self.clipboard.paste(Vec2::new(50.0, 50.0));
+                self.workflow.clear_selection();
+                for block in blocks {
+                    self.workflow.add_block(block);
+                }
+                for conn in connections {
+                    self.workflow.add_connection(conn);
+                }
+            }
+
+            // Ctrl+G 分组
+            if modifiers.ctrl && i.key_pressed(Key::G) {
+                if modifiers.shift {
+                    // 取消分组
+                    let groups: Vec<_> = self.workflow.groups.keys().cloned().collect();
+                    for id in groups {
+                        self.workflow.ungroup(id);
+                    }
+                } else {
+                    self.workflow.create_group("新分组".to_string());
+                }
+            }
+        });
+    }
+}
+
+impl eframe::App for WorkflowApp {
+    fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
+        self.handle_hot_reload();
+        self.handle_shortcuts(ctx);
+
+        // 更新流动效果
+        if self.auto_execute {
+            self.flow_phase = (self.flow_phase + 0.02) % 1.0;
+        }
+
+        // 更新连线模式
+        ConnectionWidget::set_mode(if self.use_bezier_mode {
+            ConnectionMode::Bezier
+        } else {
+            ConnectionMode::Orthogonal
+        });
+
+        // 自动执行工作流（根据速度设置）
+        let interval = 1.0 / self.execution_speed.max(0.1);
+        if self.auto_execute && self.last_execute_time.elapsed().as_secs_f32() >= interval {
+            self.last_execute_time = std::time::Instant::now();
+            if !self.workflow.blocks.is_empty() {
+                self.run_workflow();
+            }
+        }
+        // 请求持续重绘
+        ctx.request_repaint();
+
+        // 顶部工具栏
+        egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.heading("WorkflowEngine");
+                ui.separator();
+
+                // 文件操作
+                if ui.button("📂 打开").clicked() {
+                    self.open_file_dialog();
+                }
+                if ui.button("💾 保存").clicked() {
+                    self.show_save_dialog = true;
+                    self.save_options = SaveOptions::default();
+                }
+
+                ui.separator();
+
+                // 执行控制
+                let play_text = if self.auto_execute { "⏸ 暂停" } else { "▶ 运行" };
+                if ui.button(play_text).clicked() {
+                    self.auto_execute = !self.auto_execute;
+                }
+
+                ui.label("速度:");
+                ui.add(egui::Slider::new(&mut self.execution_speed, 1.0..=60.0).suffix(" Hz"));
+
+                if ui.button("⏯ 单步").clicked() {
+                    self.run_workflow();
+                }
+
+                ui.separator();
+
+                // 连线模式切换
+                let mode_text = if self.use_bezier_mode { "〰️ 曲线" } else { "⌐ 折线" };
+                if ui.button(mode_text).clicked() {
+                    self.use_bezier_mode = !self.use_bezier_mode;
+                }
+
+                // 自动布局
+                if ui.button("📐 自动布局").clicked() {
+                    self.workflow.auto_layout();
+                    self.add_log("INFO", "已自动布局".to_string());
+                }
+
+                ui.separator();
+
+                // 只读模式提示
+                if self.workflow.readonly {
+                    ui.colored_label(egui::Color32::from_rgb(255, 150, 50), "🔒 只读模式");
+                }
+
+                // 当前文件名
+                if let Some(path) = &self.current_file_path {
+                    ui.label(format!("📄 {}", path.file_name().unwrap_or_default().to_string_lossy()));
+                }
+
+                ui.label(format!("Blocks: {}", self.workflow.blocks.len()));
+
+                if self.selected_connection.is_some() {
+                    ui.separator();
+                    ui.colored_label(egui::Color32::YELLOW, "连线已选中");
+                    if ui.button("🗑 删除连线").clicked() || ctx.input(|i| i.key_pressed(Key::Delete) || i.key_pressed(Key::Backspace)) {
+                        if let Some(conn_id) = self.selected_connection.take() {
+                            self.workflow.remove_connection(conn_id);
+                            self.add_log("INFO", "删除连接".to_string());
+                        }
+                    }
+                }
+            });
+        });
+
+        // 对话框
+        self.draw_save_dialog(ctx);
+        self.draw_password_dialog(ctx);
+
+        // 侧边菜单
+        SidePanel::left("menu").min_width(180.0).show(ctx, |ui| {
+            if let Some(event) = SideMenu::draw(ui, &self.registry) {
+                match event {
+                    MenuEvent::DragBlock(script_id) => {
+                        self.state = InteractionState::DraggingFromMenu(script_id);
+                    }
+                }
+            }
+        });
+
+        // 属性面板
+        SidePanel::right("properties").min_width(200.0).show(ctx, |ui| {
+            let selected = self.workflow.selected_blocks();
+            if selected.len() == 1 {
+                if let Some(block) = self.workflow.blocks.get(&selected[0]) {
+                    if let Some(def) = self.registry.get(&block.script_id) {
+                        let changes = PropertyPanel::draw(ui, block, def);
+                        // 应用属性变更
+                        if !changes.is_empty() {
+                            let block_id = selected[0];
+                            if let Some(block) = self.workflow.blocks.get_mut(&block_id) {
+                                for change in changes {
+                                    block.properties.insert(change.property_id, change.new_value);
+                                }
+                            }
+                            self.workflow.mark_dirty(block_id);
+                        }
+                    }
+                }
+            } else {
+                ui.label("选择一个Block查看属性");
+            }
+        });
+
+        // 底部日志面板
+        if self.show_log_panel {
+            egui::TopBottomPanel::bottom("log_panel")
+                .min_height(80.0)
+                .max_height(150.0)
+                .resizable(true)
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.heading("Block输出");
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("隐藏").clicked() {
+                                self.show_log_panel = false;
+                            }
+                        });
+                    });
+                    ui.separator();
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false; 2])
+                        .show(ui, |ui| {
+                            // 显示每个Block的输出值
+                            for block in self.workflow.blocks.values() {
+                                if let Some(def) = self.registry.get(&block.script_id) {
+                                    ui.collapsing(format!("📦 {}", def.meta.name), |ui| {
+                                        // 显示输出
+                                        for output in &def.outputs {
+                                            if let Some(value) = block.output_values.get(&output.id) {
+                                                let val_str = Self::format_value_json(value);
+                                                ui.horizontal(|ui| {
+                                                    ui.colored_label(egui::Color32::LIGHT_BLUE, format!("{}:", output.name));
+                                                    ui.label(val_str);
+                                                });
+                                            }
+                                        }
+                                        // 显示状态
+                                        if !block.state.is_empty() {
+                                            ui.separator();
+                                            ui.label("状态:");
+                                            for (key, value) in &block.state {
+                                                let val_str = Self::format_value_json(value);
+                                                ui.horizontal(|ui| {
+                                                    ui.colored_label(egui::Color32::GOLD, format!("{}:", key));
+                                                    ui.label(val_str);
+                                                });
+                                            }
+                                        }
+                                    });
+                                }
+                            }
+                        });
+                });
+        }
+
+        // 主画布
+        CentralPanel::default().show(ctx, |ui| {
+            // 显示日志面板按钮（如果隐藏）
+            if !self.show_log_panel {
+                ui.horizontal(|ui| {
+                    if ui.small_button("显示输出").clicked() {
+                        self.show_log_panel = true;
+                    }
+                });
+            }
+            let (response, painter) = ui.allocate_painter(
+                ui.available_size(),
+                egui::Sense::click_and_drag(),
+            );
+            self.canvas_rect = response.rect;
+            let canvas_offset = response.rect.min;
+
+            // 绘制网格
+            Canvas::draw_grid(&painter, &self.workflow.viewport, response.rect);
+
+            // 绘制分组
+            for group in self.workflow.groups.values() {
+                let min = Canvas::vec2_to_pos2(group.position, &self.workflow.viewport, canvas_offset);
+                let max = Canvas::vec2_to_pos2(
+                    Vec2::new(group.position.x + group.size.x, group.position.y + group.size.y),
+                    &self.workflow.viewport,
+                    canvas_offset,
+                );
+                let rect = egui::Rect::from_min_max(min, max);
+                let color = egui::Color32::from_rgba_unmultiplied(
+                    group.color[0], group.color[1], group.color[2], 30
+                );
+                painter.rect_filled(rect, 8.0, color);
+                painter.text(
+                    Pos2::new(min.x + 8.0, min.y + 4.0),
+                    egui::Align2::LEFT_TOP,
+                    &group.name,
+                    egui::FontId::proportional(12.0),
+                    egui::Color32::WHITE,
+                );
+            }
+
+            // 绘制连接
+            for (conn_id, conn) in &self.workflow.connections {
+                if let (Some(from_block), Some(to_block)) = (
+                    self.workflow.blocks.get(&conn.from_block),
+                    self.workflow.blocks.get(&conn.to_block),
+                ) {
+                    if let Some(from_def) = self.registry.get(&from_block.script_id) {
+                        if let Some(to_def) = self.registry.get(&to_block.script_id) {
+                            let from_idx = from_def.outputs.iter()
+                                .position(|p| p.id == conn.from_port)
+                                .unwrap_or(0);
+                            let to_idx = to_def.inputs.iter()
+                                .position(|p| p.id == conn.to_port)
+                                .unwrap_or(0);
+
+                            let from_pos = BlockWidget::get_port_screen_pos(
+                                from_block, from_idx, true, &self.workflow.viewport, canvas_offset
+                            );
+                            let to_pos = BlockWidget::get_port_screen_pos(
+                                to_block, to_idx, false, &self.workflow.viewport, canvas_offset
+                            );
+
+                            let is_selected = self.selected_connection == Some(*conn_id);
+                            let flow = if self.auto_execute { self.flow_phase } else { 0.0 };
+                            ConnectionWidget::draw_with_flow(&painter, from_pos, to_pos, is_selected, flow);
+                        }
+                    }
+                }
+            }
+
+            // 绘制Block
+            for block in self.workflow.blocks.values() {
+                if let Some(def) = self.registry.get(&block.script_id) {
+                    BlockWidget::draw(&painter, block, def, &self.workflow.viewport, canvas_offset);
+                }
+            }
+
+            // 绘制正在拖拽的临时连接
+            if let InteractionState::DraggingConnection { ref from, mouse_pos } = self.state {
+                if let Some(block) = self.workflow.blocks.get(&from.block_id) {
+                    let port_pos = BlockWidget::get_port_screen_pos(
+                        block, from.port_index, from.is_output, &self.workflow.viewport, canvas_offset
+                    );
+                    if from.is_output {
+                        ConnectionWidget::draw(&painter, port_pos, mouse_pos, true);
+                    } else {
+                        ConnectionWidget::draw(&painter, mouse_pos, port_pos, true);
+                    }
+                }
+            }
+
+            // 绘制框选矩形
+            if let InteractionState::BoxSelecting { start } = self.state {
+                if let Some(end) = self.box_select_end {
+                    let rect = egui::Rect::from_two_pos(start, end);
+                    painter.rect_filled(rect, 0.0, egui::Color32::from_rgba_unmultiplied(100, 150, 255, 30));
+                    painter.rect_stroke(rect, 0.0, egui::Stroke::new(1.0, egui::Color32::from_rgb(100, 150, 255)));
+                }
+            }
+
+            // 处理交互
+            self.handle_canvas_interaction(&response, canvas_offset);
+
+            // 执行脏Block
+            if !self.workflow.dirty_blocks.is_empty() {
+                if let Err(e) = self.executor.execute_dirty(&mut self.workflow, &self.registry) {
+                    log::error!("执行错误: {}", e);
+                }
+            }
+        });
+
+        // 请求持续重绘
+        ctx.request_repaint();
+    }
+}
+
+impl WorkflowApp {
+    fn handle_canvas_interaction(&mut self, response: &egui::Response, canvas_offset: Pos2) {
+        let pointer_pos = response.hover_pos().unwrap_or(Pos2::ZERO);
+        let canvas_pos = Canvas::pos2_to_vec2(pointer_pos, &self.workflow.viewport, canvas_offset);
+
+        // 检测空格键状态
+        response.ctx.input(|i| {
+            if i.key_pressed(Key::Space) {
+                self.space_pressed = true;
+            }
+            if i.key_released(Key::Space) {
+                self.space_pressed = false;
+            }
+        });
+
+        // 触控板和滚轮处理
+        if response.hovered() {
+            let (scroll_delta, modifiers, zoom_delta, multi_touch) = response.ctx.input(|i| {
+                (i.raw_scroll_delta, i.modifiers, i.zoom_delta(), i.multi_touch())
+            });
+
+            // 1. 优先处理捏合缩放手势（触控板双指捏合）
+            if (zoom_delta - 1.0).abs() > 0.001 {
+                let old_zoom = self.workflow.viewport.zoom;
+                self.workflow.viewport.zoom *= zoom_delta;
+                self.workflow.viewport.clamp_zoom();
+
+                let zoom_ratio = self.workflow.viewport.zoom / old_zoom;
+                self.workflow.viewport.offset.x = pointer_pos.x - canvas_offset.x
+                    - (pointer_pos.x - canvas_offset.x - self.workflow.viewport.offset.x) * zoom_ratio;
+                self.workflow.viewport.offset.y = pointer_pos.y - canvas_offset.y
+                    - (pointer_pos.y - canvas_offset.y - self.workflow.viewport.offset.y) * zoom_ratio;
+            }
+            // 2. 多点触控缩放（备用方案）
+            else if let Some(touch) = multi_touch {
+                if (touch.zoom_delta - 1.0).abs() > 0.001 {
+                    let old_zoom = self.workflow.viewport.zoom;
+                    self.workflow.viewport.zoom *= touch.zoom_delta;
+                    self.workflow.viewport.clamp_zoom();
+
+                    let zoom_ratio = self.workflow.viewport.zoom / old_zoom;
+                    self.workflow.viewport.offset.x = pointer_pos.x - canvas_offset.x
+                        - (pointer_pos.x - canvas_offset.x - self.workflow.viewport.offset.x) * zoom_ratio;
+                    self.workflow.viewport.offset.y = pointer_pos.y - canvas_offset.y
+                        - (pointer_pos.y - canvas_offset.y - self.workflow.viewport.offset.y) * zoom_ratio;
+                }
+            }
+            // 3. Command/Ctrl + 滚轮 = 缩放
+            else if (modifiers.command || modifiers.ctrl) && scroll_delta.y != 0.0 {
+                let zoom_factor = 1.0 + scroll_delta.y * 0.002;
+                let old_zoom = self.workflow.viewport.zoom;
+                self.workflow.viewport.zoom *= zoom_factor;
+                self.workflow.viewport.clamp_zoom();
+
+                let zoom_ratio = self.workflow.viewport.zoom / old_zoom;
+                self.workflow.viewport.offset.x = pointer_pos.x - canvas_offset.x
+                    - (pointer_pos.x - canvas_offset.x - self.workflow.viewport.offset.x) * zoom_ratio;
+                self.workflow.viewport.offset.y = pointer_pos.y - canvas_offset.y
+                    - (pointer_pos.y - canvas_offset.y - self.workflow.viewport.offset.y) * zoom_ratio;
+            }
+            // 4. 双指滑动平移（无修饰键）
+            else if !modifiers.command && !modifiers.ctrl && (scroll_delta.x != 0.0 || scroll_delta.y != 0.0) {
+                self.workflow.viewport.offset.x += scroll_delta.x;
+                self.workflow.viewport.offset.y += scroll_delta.y;
+            }
+        }
+
+        // 中键平移 或 空格+左键平移
+        let is_panning = response.dragged_by(egui::PointerButton::Middle)
+            || (self.space_pressed && response.dragged_by(egui::PointerButton::Primary));
+        if is_panning {
+            let delta = response.drag_delta();
+            self.workflow.viewport.offset.x += delta.x;
+            self.workflow.viewport.offset.y += delta.y;
+            return; // 平移时不处理其他交互
+        }
+
+        // ESC或右键取消当前操作
+        let cancel = response.ctx.input(|i| i.key_pressed(Key::Escape))
+            || response.clicked_by(egui::PointerButton::Secondary);
+        if cancel {
+            if !matches!(self.state, InteractionState::Idle) {
+                self.state = InteractionState::Idle;
+                return;
+            }
+        }
+
+        // 从菜单拖入Block
+        if let InteractionState::DraggingFromMenu(ref script_id) = self.state.clone() {
+            // 检测鼠标释放（拖拽结束）
+            let released = response.ctx.input(|i| {
+                i.pointer.any_released() || !i.pointer.any_down()
+            });
+
+            if released {
+                // 检查鼠标是否在画布区域内
+                if let Some(pos) = response.ctx.pointer_hover_pos() {
+                    if response.rect.contains(pos) {
+                        if let Some(def) = self.registry.get(&script_id) {
+                            let name = def.meta.name.clone();
+                            let block = Block::new(def, canvas_pos);
+                            self.workflow.add_block(block);
+                            self.add_log("INFO", format!("添加Block: {}", name));
+                        }
+                    }
+                }
+                self.state = InteractionState::Idle;
+            }
+        }
+
+        // 左键点击 - 检测端口或Block
+        if response.drag_started_by(egui::PointerButton::Primary) {
+            // 先检测端口碰撞
+            if let Some(port_hit) = self.find_port_at(pointer_pos, canvas_offset) {
+                self.state = InteractionState::DraggingConnection {
+                    from: port_hit,
+                    mouse_pos: pointer_pos,
+                };
+            } else {
+                // 检测连线碰撞
+                let hit_conn = self.find_connection_at(pointer_pos, canvas_offset);
+                if let Some(conn_id) = hit_conn {
+                    self.selected_connection = Some(conn_id);
+                    self.workflow.clear_selection();
+                } else {
+                    self.selected_connection = None;
+
+                    // 检测Block碰撞
+                    let mut hit_block = None;
+                    for (id, block) in &self.workflow.blocks {
+                        if block.contains(canvas_pos) {
+                            hit_block = Some(*id);
+                            break;
+                        }
+                    }
+
+                    if let Some(id) = hit_block {
+                        let modifiers = response.ctx.input(|i| i.modifiers);
+                        if !modifiers.ctrl {
+                            if !self.workflow.blocks.get(&id).map(|b| b.selected).unwrap_or(false) {
+                                self.workflow.clear_selection();
+                            }
+                        }
+                        if let Some(block) = self.workflow.blocks.get_mut(&id) {
+                            block.selected = true;
+                        }
+                        self.state = InteractionState::DraggingBlock(id);
+                    } else {
+                        self.workflow.clear_selection();
+                        self.state = InteractionState::BoxSelecting { start: pointer_pos };
+                        self.box_select_end = Some(pointer_pos);
+                    }
+                }
+            }
+        }
+
+        // 拖拽Block
+        if let InteractionState::DraggingBlock(_) = self.state {
+            if response.dragged_by(egui::PointerButton::Primary) {
+                let delta = response.drag_delta();
+                let scale_delta = Vec2::new(
+                    delta.x / self.workflow.viewport.zoom,
+                    delta.y / self.workflow.viewport.zoom,
+                );
+                for block in self.workflow.blocks.values_mut() {
+                    if block.selected {
+                        block.position.x += scale_delta.x;
+                        block.position.y += scale_delta.y;
+                    }
+                }
+            }
+        }
+
+        // 拖拽连接 - 更新鼠标位置
+        if let InteractionState::DraggingConnection { ref mut mouse_pos, .. } = self.state {
+            *mouse_pos = pointer_pos;
+        }
+
+        // 框选拖拽 - 更新结束位置
+        if let InteractionState::BoxSelecting { .. } = self.state {
+            self.box_select_end = Some(pointer_pos);
+        }
+
+        // 释放
+        if response.drag_stopped() {
+            match &self.state {
+                InteractionState::DraggingBlock(_) => {
+                    const GRID_SIZE: f32 = 20.0;
+                    for block in self.workflow.blocks.values_mut() {
+                        if block.selected {
+                            block.snap_to_grid(GRID_SIZE);
+                        }
+                    }
+                }
+                InteractionState::BoxSelecting { start } => {
+                    // 框选完成，选中框内的Block
+                    if let Some(end) = self.box_select_end {
+                        let min_x = start.x.min(end.x);
+                        let max_x = start.x.max(end.x);
+                        let min_y = start.y.min(end.y);
+                        let max_y = start.y.max(end.y);
+
+                        for block in self.workflow.blocks.values_mut() {
+                            let block_screen = Pos2::new(
+                                block.position.x * self.workflow.viewport.zoom + self.workflow.viewport.offset.x + self.canvas_rect.min.x,
+                                block.position.y * self.workflow.viewport.zoom + self.workflow.viewport.offset.y + self.canvas_rect.min.y,
+                            );
+                            let block_end = Pos2::new(
+                                block_screen.x + block.size.x * self.workflow.viewport.zoom,
+                                block_screen.y + block.size.y * self.workflow.viewport.zoom,
+                            );
+
+                            // 检查Block是否与框选区域相交
+                            if block_screen.x < max_x && block_end.x > min_x &&
+                               block_screen.y < max_y && block_end.y > min_y {
+                                block.selected = true;
+                            }
+                        }
+                    }
+                    self.box_select_end = None;
+                }
+                InteractionState::DraggingConnection { from, .. } => {
+                    // 检查是否释放在目标端口上
+                    if let Some(to_port) = self.find_port_at(pointer_pos, canvas_offset) {
+                        let mut log_msg: Option<String> = None;
+                        // 确保连接方向正确：output -> input
+                        if from.is_output && !to_port.is_output && from.block_id != to_port.block_id {
+                            let conn = Connection::new(
+                                from.block_id,
+                                from.port_id.clone(),
+                                to_port.block_id,
+                                to_port.port_id.clone(),
+                            );
+                            self.workflow.add_connection(conn);
+                            log_msg = Some(format!("连接: {} -> {}", from.port_id, to_port.port_id));
+                        } else if !from.is_output && to_port.is_output && from.block_id != to_port.block_id {
+                            let conn = Connection::new(
+                                to_port.block_id,
+                                to_port.port_id.clone(),
+                                from.block_id,
+                                from.port_id.clone(),
+                            );
+                            self.workflow.add_connection(conn);
+                            log_msg = Some(format!("连接: {} -> {}", to_port.port_id, from.port_id));
+                        }
+                        if let Some(msg) = log_msg {
+                            self.add_log("INFO", msg);
+                        }
+                    }
+                }
+                _ => {}
+            }
+            self.state = InteractionState::Idle;
+        }
+    }
+
+    /// 在指定屏幕位置查找端口
+    fn find_port_at(&self, screen_pos: Pos2, canvas_offset: Pos2) -> Option<DraggingPort> {
+        const PORT_HIT_RADIUS: f32 = 12.0;
+
+        for (block_id, block) in &self.workflow.blocks {
+            if let Some(def) = self.registry.get(&block.script_id) {
+                // 检查输入端口
+                for (i, input) in def.inputs.iter().enumerate() {
+                    let port_pos = BlockWidget::get_port_screen_pos(
+                        block, i, false, &self.workflow.viewport, canvas_offset
+                    );
+                    let dist = ((screen_pos.x - port_pos.x).powi(2) + (screen_pos.y - port_pos.y).powi(2)).sqrt();
+                    if dist < PORT_HIT_RADIUS * self.workflow.viewport.zoom {
+                        return Some(DraggingPort {
+                            block_id: *block_id,
+                            port_id: input.id.clone(),
+                            is_output: false,
+                            port_index: i,
+                        });
+                    }
+                }
+                // 检查输出端口
+                for (i, output) in def.outputs.iter().enumerate() {
+                    let port_pos = BlockWidget::get_port_screen_pos(
+                        block, i, true, &self.workflow.viewport, canvas_offset
+                    );
+                    let dist = ((screen_pos.x - port_pos.x).powi(2) + (screen_pos.y - port_pos.y).powi(2)).sqrt();
+                    if dist < PORT_HIT_RADIUS * self.workflow.viewport.zoom {
+                        return Some(DraggingPort {
+                            block_id: *block_id,
+                            port_id: output.id.clone(),
+                            is_output: true,
+                            port_index: i,
+                        });
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// 在指定屏幕位置查找连线
+    fn find_connection_at(&self, screen_pos: Pos2, canvas_offset: Pos2) -> Option<Uuid> {
+        const HIT_DISTANCE: f32 = 8.0;
+
+        for (conn_id, conn) in &self.workflow.connections {
+            let from_block = self.workflow.blocks.get(&conn.from_block)?;
+            let to_block = self.workflow.blocks.get(&conn.to_block)?;
+            let from_def = self.registry.get(&from_block.script_id)?;
+            let to_def = self.registry.get(&to_block.script_id)?;
+
+            let from_idx = from_def.outputs.iter()
+                .position(|p| p.id == conn.from_port)
+                .unwrap_or(0);
+            let to_idx = to_def.inputs.iter()
+                .position(|p| p.id == conn.to_port)
+                .unwrap_or(0);
+
+            let from_pos = BlockWidget::get_port_screen_pos(
+                from_block, from_idx, true, &self.workflow.viewport, canvas_offset
+            );
+            let to_pos = BlockWidget::get_port_screen_pos(
+                to_block, to_idx, false, &self.workflow.viewport, canvas_offset
+            );
+
+            // 简单的点到线段距离检测（贝塞尔曲线近似为直线检测）
+            let dist = Self::point_to_bezier_distance(screen_pos, from_pos, to_pos);
+            if dist < HIT_DISTANCE {
+                return Some(*conn_id);
+            }
+        }
+        None
+    }
+
+    /// 计算点到贝塞尔曲线的近似距离
+    fn point_to_bezier_distance(point: Pos2, start: Pos2, end: Pos2) -> f32 {
+        // 采样贝塞尔曲线上的点，找最近距离
+        let dx = (end.x - start.x).abs() * 0.5;
+        let ctrl1 = Pos2::new(start.x + dx, start.y);
+        let ctrl2 = Pos2::new(end.x - dx, end.y);
+
+        let mut min_dist = f32::MAX;
+        for i in 0..=20 {
+            let t = i as f32 / 20.0;
+            let t2 = t * t;
+            let t3 = t2 * t;
+            let mt = 1.0 - t;
+            let mt2 = mt * mt;
+            let mt3 = mt2 * mt;
+
+            let x = mt3 * start.x + 3.0 * mt2 * t * ctrl1.x + 3.0 * mt * t2 * ctrl2.x + t3 * end.x;
+            let y = mt3 * start.y + 3.0 * mt2 * t * ctrl1.y + 3.0 * mt * t2 * ctrl2.y + t3 * end.y;
+
+            let dist = ((point.x - x).powi(2) + (point.y - y).powi(2)).sqrt();
+            if dist < min_dist {
+                min_dist = dist;
+            }
+        }
+        min_dist
+    }
+
+    /// 打开文件对话框
+    fn open_file_dialog(&mut self) {
+        let file = rfd::FileDialog::new()
+            .add_filter("蓝图文件", &["L", "LZ", "l", "lz"])
+            .add_filter("明文蓝图", &["L", "l"])
+            .add_filter("加密蓝图", &["LZ", "lz"])
+            .set_directory(std::env::current_dir().unwrap_or_default())
+            .pick_file();
+
+        if let Some(path) = file {
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            if ext.eq_ignore_ascii_case("lz") {
+                self.pending_operation = Some(FileOperation::Load(path));
+                self.show_password_dialog = true;
+            } else {
+                self.load_workflow_file(&path, None);
+            }
+        }
+    }
+
+    /// 加载工作流文件
+    fn load_workflow_file(&mut self, path: &std::path::Path, password: Option<&str>) {
+        match BlueprintStorage::load(path, password) {
+            Ok(mut wf) => {
+                wf.update_execution_order();
+                self.workflow = wf;
+                self.add_log("INFO", format!("已加载: {}", path.display()));
+                self.current_file_path = Some(path.to_path_buf());
+            }
+            Err(e) => {
+                self.add_log("ERROR", format!("加载失败: {}", e));
+            }
+        }
+    }
+
+    /// 保存文件对话框
+    fn save_file_dialog(&mut self) {
+        let ext = if self.save_options.encrypted { "LZ" } else { "L" };
+        let default_name = self.workflow.name.clone() + "." + ext;
+
+        let file = rfd::FileDialog::new()
+            .add_filter("蓝图文件", &[ext])
+            .set_file_name(&default_name)
+            .set_directory(std::env::current_dir().unwrap_or_default())
+            .save_file();
+
+        if let Some(path) = file {
+            if self.save_options.encrypted {
+                if self.save_options.dual_save {
+                    self.pending_operation = Some(FileOperation::SaveDual(path));
+                } else {
+                    self.pending_operation = Some(FileOperation::Save(path));
+                }
+                self.show_password_dialog = true;
+            } else {
+                self.save_workflow_file(&path, None);
+            }
+        }
+    }
+
+    /// 保存工作流文件
+    fn save_workflow_file(&mut self, path: &std::path::Path, password: Option<&str>) {
+        let mut workflow = self.workflow.clone();
+        workflow.readonly = self.save_options.readonly;
+
+        if self.save_options.dual_save {
+            let base_name = path.with_extension("").to_string_lossy().to_string();
+            match BlueprintStorage::save_dual(&workflow, &base_name, password.is_some(), password) {
+                Ok((edit_path, dist_path)) => {
+                    self.add_log("INFO", format!("可编辑: {}", edit_path.display()));
+                    self.add_log("INFO", format!("可分发: {}", dist_path.display()));
+                    self.current_file_path = Some(edit_path);
+                }
+                Err(e) => self.add_log("ERROR", format!("保存失败: {}", e)),
+            }
+        } else {
+            match BlueprintStorage::save(&workflow, path, password) {
+                Ok(()) => {
+                    self.add_log("INFO", format!("已保存: {}", path.display()));
+                    self.current_file_path = Some(path.to_path_buf());
+                }
+                Err(e) => self.add_log("ERROR", format!("保存失败: {}", e)),
+            }
+        }
+    }
+
+    fn draw_save_dialog(&mut self, ctx: &Context) {
+        if !self.show_save_dialog {
+            return;
+        }
+
+        egui::Window::new("💾 保存蓝图")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.heading("保存选项");
+                ui.add_space(8.0);
+
+                // 加密选项
+                ui.horizontal(|ui| {
+                    ui.radio_value(&mut self.save_options.encrypted, false, "📄 明文 (.L)");
+                    ui.radio_value(&mut self.save_options.encrypted, true, "🔒 加密 (.LZ)");
+                });
+
+                ui.add_space(4.0);
+
+                // 只读选项
+                ui.checkbox(&mut self.save_options.readonly, "📛 只读模式（不可编辑）");
+
+                // 双份保存选项
+                ui.checkbox(&mut self.save_options.dual_save, "📦 双份保存（可编辑 + 可分发）");
+
+                ui.add_space(12.0);
+                ui.separator();
+                ui.add_space(8.0);
+
+                ui.horizontal(|ui| {
+                    if ui.button("📁 选择位置并保存").clicked() {
+                        self.show_save_dialog = false;
+                        self.save_file_dialog();
+                    }
+
+                    if ui.button("取消").clicked() {
+                        self.show_save_dialog = false;
+                    }
+                });
+            });
+    }
+
+    fn draw_password_dialog(&mut self, ctx: &Context) {
+        if !self.show_password_dialog {
+            return;
+        }
+
+        egui::Window::new("🔐 输入密码")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label("密码 (最长32位):");
+                ui.add(egui::TextEdit::singleline(&mut self.password_input).password(true));
+
+                if self.password_input.len() > 32 {
+                    ui.colored_label(egui::Color32::RED, "密码不能超过32位!");
+                }
+
+                ui.add_space(8.0);
+
+                ui.horizontal(|ui| {
+                    let valid = !self.password_input.is_empty() && self.password_input.len() <= 32;
+
+                    if ui.add_enabled(valid, egui::Button::new("确定")).clicked() {
+                        let password = self.password_input.clone();
+                        if let Some(op) = self.pending_operation.take() {
+                            match op {
+                                FileOperation::Save(path) => {
+                                    self.save_workflow_file(&path, Some(&password));
+                                }
+                                FileOperation::SaveDual(path) => {
+                                    self.save_workflow_file(&path, Some(&password));
+                                }
+                                FileOperation::Load(path) => {
+                                    self.load_workflow_file(&path, Some(&password));
+                                }
+                            }
+                        }
+                        self.show_password_dialog = false;
+                        self.password_input.clear();
+                    }
+
+                    if ui.button("取消").clicked() {
+                        self.show_password_dialog = false;
+                        self.password_input.clear();
+                        self.pending_operation = None;
+                    }
+                });
+            });
+    }
+}

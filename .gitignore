@@ -1,0 +1,20 @@
+# Rust
+/target/
+
+# Build
+/dist/
+
+# macOS
+.DS_Store
+*.swp
+*~
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# 临时文件
+*.tmp
+*.bak
+归档.zip
