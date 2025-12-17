@@ -854,7 +854,7 @@ impl WorkflowApp {
             }
         }
 
-        // 左键点击 - 检测端口或Block
+        // 左键按下 - 开始拖拽
         if response.drag_started_by(egui::PointerButton::Primary) {
             let modifiers = response.ctx.input(|i| i.modifiers);
 
@@ -865,59 +865,108 @@ impl WorkflowApp {
                     mouse_pos: pointer_pos,
                 };
             } else {
+                // 检测Block碰撞
+                let mut hit_block = None;
+                for (id, block) in &self.workflow.blocks {
+                    if block.contains(canvas_pos) {
+                        hit_block = Some(*id);
+                        break;
+                    }
+                }
+
+                if let Some(id) = hit_block {
+                    let is_multi_select = modifiers.ctrl || modifiers.command;
+                    let was_selected = self.workflow.blocks.get(&id).map(|b| b.selected).unwrap_or(false);
+
+                    if is_multi_select {
+                        // Ctrl/Cmd+点击：切换选中状态
+                        if let Some(block) = self.workflow.blocks.get_mut(&id) {
+                            block.selected = !block.selected;
+                        }
+                    } else if !was_selected {
+                        // 点击未选中的Block：清除其他选择，选中这个
+                        self.workflow.clear_selection();
+                        self.selected_connections.clear();
+                        if let Some(block) = self.workflow.blocks.get_mut(&id) {
+                            block.selected = true;
+                        }
+                    }
+                    // 如果已选中，不做任何操作（允许拖拽多个）
+                    self.state = InteractionState::DraggingBlock(id);
+                } else {
+                    // 检测连线碰撞
+                    let hit_conn = self.find_connection_at(pointer_pos, canvas_offset);
+                    if let Some(conn_id) = hit_conn {
+                        let is_multi_select = modifiers.ctrl || modifiers.command;
+                        if is_multi_select {
+                            if self.selected_connections.contains(&conn_id) {
+                                self.selected_connections.remove(&conn_id);
+                            } else {
+                                self.selected_connections.insert(conn_id);
+                            }
+                        } else {
+                            self.selected_connections.clear();
+                            self.selected_connections.insert(conn_id);
+                        }
+                        self.workflow.clear_selection();
+                    } else {
+                        // 点击空白：开始框选（松开时如果没拖动则清除选择）
+                        self.state = InteractionState::BoxSelecting { start: pointer_pos };
+                        self.box_select_end = Some(pointer_pos);
+                    }
+                }
+            }
+        }
+
+        // 左键单击（无拖拽）- 处理选择
+        if response.clicked_by(egui::PointerButton::Primary) {
+            let modifiers = response.ctx.input(|i| i.modifiers);
+            let is_multi_select = modifiers.ctrl || modifiers.command;
+
+            // 检测Block碰撞
+            let mut hit_block = None;
+            for (id, block) in &self.workflow.blocks {
+                if block.contains(canvas_pos) {
+                    hit_block = Some(*id);
+                    break;
+                }
+            }
+
+            if let Some(id) = hit_block {
+                let was_selected = self.workflow.blocks.get(&id).map(|b| b.selected).unwrap_or(false);
+
+                if is_multi_select {
+                    // Ctrl/Cmd+点击：切换选中状态
+                    if let Some(block) = self.workflow.blocks.get_mut(&id) {
+                        block.selected = !block.selected;
+                    }
+                } else {
+                    // 普通点击：只选中这个Block
+                    self.workflow.clear_selection();
+                    self.selected_connections.clear();
+                    if let Some(block) = self.workflow.blocks.get_mut(&id) {
+                        block.selected = true;
+                    }
+                }
+            } else {
                 // 检测连线碰撞
-                let is_multi_select = modifiers.ctrl || modifiers.command;
                 let hit_conn = self.find_connection_at(pointer_pos, canvas_offset);
                 if let Some(conn_id) = hit_conn {
                     if is_multi_select {
-                        // Ctrl/Cmd+点击切换选中
                         if self.selected_connections.contains(&conn_id) {
                             self.selected_connections.remove(&conn_id);
                         } else {
                             self.selected_connections.insert(conn_id);
                         }
                     } else {
-                        // 普通点击单选
                         self.selected_connections.clear();
                         self.selected_connections.insert(conn_id);
-                    }
-                    self.workflow.clear_selection();
-                } else {
-                    if !is_multi_select {
-                        self.selected_connections.clear();
-                    }
-
-                    // 检测Block碰撞
-                    let mut hit_block = None;
-                    for (id, block) in &self.workflow.blocks {
-                        if block.contains(canvas_pos) {
-                            hit_block = Some(*id);
-                            break;
-                        }
-                    }
-
-                    if let Some(id) = hit_block {
-                        let is_multi_select = modifiers.ctrl || modifiers.command;
-                        let was_selected = self.workflow.blocks.get(&id).map(|b| b.selected).unwrap_or(false);
-
-                        if is_multi_select {
-                            // Ctrl/Cmd+点击：切换选中状态
-                            if let Some(block) = self.workflow.blocks.get_mut(&id) {
-                                block.selected = !block.selected;
-                            }
-                        } else {
-                            // 普通点击：单选这个Block（清除其他选择）
-                            self.workflow.clear_selection();
-                            if let Some(block) = self.workflow.blocks.get_mut(&id) {
-                                block.selected = true;
-                            }
-                        }
-                        self.state = InteractionState::DraggingBlock(id);
-                    } else {
                         self.workflow.clear_selection();
-                        self.state = InteractionState::BoxSelecting { start: pointer_pos };
-                        self.box_select_end = Some(pointer_pos);
                     }
+                } else {
+                    // 点击空白：清除所有选择
+                    self.workflow.clear_selection();
+                    self.selected_connections.clear();
                 }
             }
         }
