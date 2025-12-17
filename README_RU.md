@@ -12,6 +12,9 @@
 - Расчёта навыков/баффов
 - Конечных автоматов
 - Любой логики, представимой как поток данных
+<img width="1403" height="863" alt="image" src="https://github.com/user-attachments/assets/7201603f-72a7-4035-b66b-c1bc7106df32" />
+
+https://github.com/user-attachments/assets/08793b5b-d584-44a1-b641-9e8912ce3061
 
 ## Быстрый старт
 
