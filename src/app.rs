@@ -28,6 +28,7 @@ enum InteractionState {
     BoxSelecting { start: Pos2 },
     DraggingFromMenu(String),
     DraggingConnection { from: DraggingPort, mouse_pos: Pos2 },
+    EditingBlockName { block_id: Uuid, edit_text: String },
 }
 
 /// 日志条目
@@ -286,6 +287,34 @@ impl WorkflowApp {
 
     /// 处理快捷键
     fn handle_shortcuts(&mut self, ctx: &Context) {
+        // 处理Block名称编辑状态
+        if let InteractionState::EditingBlockName { block_id, ref edit_text } = self.state.clone() {
+            let enter = ctx.input(|i| i.key_pressed(Key::Enter));
+            let escape = ctx.input(|i| i.key_pressed(Key::Escape));
+
+            if enter {
+                // Enter: 保存编辑
+                self.save_undo_snapshot();
+                if let Some(block) = self.workflow.blocks.get_mut(&block_id) {
+                    if edit_text.trim().is_empty() {
+                        block.custom_name = None;
+                    } else {
+                        block.custom_name = Some(edit_text.clone());
+                    }
+                }
+                self.state = InteractionState::Idle;
+                self.add_log("INFO", "Block名称已修改".to_string());
+                return;
+            }
+            if escape {
+                // Escape: 取消编辑
+                self.state = InteractionState::Idle;
+                return;
+            }
+            // 编辑状态时不处理其他快捷键
+            return;
+        }
+
         let modifiers = ctx.input(|i| i.modifiers);
 
         ctx.input(|i| {
@@ -420,7 +449,7 @@ impl eframe::App for WorkflowApp {
 
                 // 只读模式提示
                 if self.workflow.readonly {
-                    ui.colored_label(egui::Color32::from_rgb(255, 150, 50), "🔒 只读模式");
+                    ui.colored_label(egui::Color32::from_rgb(255, 100, 100), "🔒 只读模式");
                 }
 
                 // 当前文件名
@@ -433,7 +462,7 @@ impl eframe::App for WorkflowApp {
                 if !self.selected_connections.is_empty() {
                     ui.separator();
                     let count = self.selected_connections.len();
-                    ui.colored_label(egui::Color32::YELLOW, format!("连线已选中: {}", count));
+                    ui.colored_label(egui::Color32::from_rgb(255, 100, 100), format!("连线已选中: {}", count));
                     if ui.button("🗑 删除连线").clicked() {
                         let to_remove: Vec<_> = self.selected_connections.drain().collect();
                         for conn_id in to_remove {
@@ -524,7 +553,7 @@ impl eframe::App for WorkflowApp {
                                             for (key, value) in &block.state {
                                                 let val_str = Self::format_value_json(value);
                                                 ui.horizontal(|ui| {
-                                                    ui.colored_label(egui::Color32::GOLD, format!("{}:", key));
+                                                    ui.colored_label(egui::Color32::from_rgb(255, 100, 100), format!("{}:", key));
                                                     ui.label(val_str);
                                                 });
                                             }
@@ -578,7 +607,8 @@ impl eframe::App for WorkflowApp {
                 );
             }
 
-            // 绘制连接
+            // 绘制连接（视口裁剪优化）
+            let viewport_rect = response.rect;
             for (conn_id, conn) in &self.workflow.connections {
                 if let (Some(from_block), Some(to_block)) = (
                     self.workflow.blocks.get(&conn.from_block),
@@ -600,8 +630,13 @@ impl eframe::App for WorkflowApp {
                                 to_block, to_idx, false, &self.workflow.viewport, canvas_offset
                             );
 
+                            // 视口裁剪：检查连线是否在可见区域
+                            let conn_rect = egui::Rect::from_two_pos(from_pos, to_pos).expand(50.0);
+                            if !conn_rect.intersects(viewport_rect) {
+                                continue;
+                            }
+
                             let is_selected = self.selected_connections.contains(conn_id);
-                            // 使用连线激活强度，而不是全局flow_phase
                             let activation = self.workflow.get_connection_activation(*conn_id);
                             ConnectionWidget::draw_with_flow(&painter, from_pos, to_pos, is_selected, activation);
                         }
@@ -609,10 +644,57 @@ impl eframe::App for WorkflowApp {
                 }
             }
 
-            // 绘制Block
+            // 绘制Block（视口裁剪优化）
             for block in self.workflow.blocks.values() {
-                if let Some(def) = self.registry.get(&block.script_id) {
-                    BlockWidget::draw(&painter, block, def, &self.workflow.viewport, canvas_offset);
+                // 计算Block屏幕位置
+                let screen_pos = Pos2::new(
+                    block.position.x * self.workflow.viewport.zoom + self.workflow.viewport.offset.x + canvas_offset.x,
+                    block.position.y * self.workflow.viewport.zoom + self.workflow.viewport.offset.y + canvas_offset.y,
+                );
+                let screen_size = egui::Vec2::new(
+                    block.size.x * self.workflow.viewport.zoom,
+                    block.size.y * self.workflow.viewport.zoom,
+                );
+                let block_rect = egui::Rect::from_min_size(screen_pos, screen_size);
+
+                // 只渲染可见区域内的Block
+                if block_rect.intersects(viewport_rect) {
+                    if let Some(def) = self.registry.get(&block.script_id) {
+                        BlockWidget::draw(&painter, block, def, &self.workflow.viewport, canvas_offset);
+                    }
+                }
+            }
+
+            // 显示Block名称编辑框
+            if let InteractionState::EditingBlockName { block_id, ref mut edit_text } = &mut self.state {
+                if let Some(block) = self.workflow.blocks.get(block_id) {
+                    let pos = self.workflow.viewport.canvas_to_screen(block.position);
+                    let screen_pos = Pos2::new(pos.x + canvas_offset.x + 4.0, pos.y + canvas_offset.y + 2.0);
+                    let width = block.size.x * self.workflow.viewport.zoom - 8.0;
+
+                    egui::Area::new(egui::Id::new("block_name_edit"))
+                        .fixed_pos(screen_pos)
+                        .order(egui::Order::Foreground)
+                        .show(&response.ctx, |ui| {
+                            let resp = ui.add(
+                                egui::TextEdit::singleline(edit_text)
+                                    .desired_width(width)
+                                    .font(egui::FontId::proportional(12.0 * self.workflow.viewport.zoom))
+                            );
+
+                            // 自动获取焦点
+                            if !resp.has_focus() {
+                                resp.request_focus();
+                            }
+
+                            // Enter确认或失去焦点保存
+                            let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
+                            let escape_pressed = ui.input(|i| i.key_pressed(egui::Key::Escape));
+
+                            if enter_pressed || escape_pressed || (resp.lost_focus() && !resp.has_focus()) {
+                                // 这里不能直接修改，标记需要保存
+                            }
+                        });
                 }
             }
 
@@ -1066,6 +1148,31 @@ impl WorkflowApp {
                     // 点击空白：清除所有选择
                     self.workflow.clear_selection();
                     self.selected_connections.clear();
+                }
+            }
+        }
+
+        // 双击Block名称 - 开始编辑（只读模式禁止）
+        if response.double_clicked_by(egui::PointerButton::Primary) && !self.workflow.readonly {
+            // 检测Block碰撞
+            for (id, block) in &self.workflow.blocks {
+                if block.contains(canvas_pos) {
+                    // 检测是否点击在标题区域（Block顶部28像素）
+                    let header_height = 28.0;
+                    let block_top = block.position.y;
+                    if canvas_pos.y <= block_top + header_height {
+                        // 获取当前显示名称
+                        let current_name = if let Some(def) = self.registry.get(&block.script_id) {
+                            block.display_name(def).to_string()
+                        } else {
+                            block.custom_name.clone().unwrap_or_default()
+                        };
+                        self.state = InteractionState::EditingBlockName {
+                            block_id: *id,
+                            edit_text: current_name,
+                        };
+                    }
+                    break;
                 }
             }
         }

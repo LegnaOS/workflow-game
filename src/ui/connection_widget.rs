@@ -42,7 +42,7 @@ impl ConnectionWidget {
     /// 绘制连线（支持选中状态和流动效果）
     pub fn draw_with_selection(painter: &Painter, from: Pos2, to: Pos2, dragging: bool, selected: bool) {
         let color = if selected {
-            Color32::from_rgb(255, 180, 50)
+            Color32::from_rgb(255, 100, 100)  // 红色选中
         } else if dragging {
             Color32::from_rgb(80, 200, 255)
         } else {
@@ -56,7 +56,7 @@ impl ConnectionWidget {
     /// 绘制带流动效果的连线（支持激活强度）
     pub fn draw_with_flow(painter: &Painter, from: Pos2, to: Pos2, selected: bool, activation: f32) {
         let base_color = if selected {
-            Color32::from_rgb(255, 180, 50)
+            Color32::from_rgb(255, 100, 100)  // 红色选中
         } else if activation > 0.01 {
             // 激活状态：根据强度显示高亮颜色
             let glow = (activation * 255.0) as u8;

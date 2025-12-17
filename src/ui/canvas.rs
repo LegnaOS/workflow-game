@@ -9,20 +9,50 @@ pub struct Canvas;
 impl Canvas {
     /// 绘制网格背景
     pub fn draw_grid(painter: &Painter, viewport: &Viewport, rect: Rect) {
-        let grid_size = 20.0 * viewport.zoom;
-        let grid_color = Color32::from_gray(40);
-        let major_grid_color = Color32::from_gray(50);
+        // 60%灰色网格（0.6 * 255 ≈ 153，但因为是暗色主题，用较暗的灰）
+        // 60%灰 = 40%黑 = 255 * 0.4 = 102
+        let grid_color = Color32::from_gray(100);         // 小网格 60%灰
+        let major_grid_color = Color32::from_gray(120);   // 大网格稍亮
 
-        // 计算可见范围
-        let start_x = ((-viewport.offset.x / grid_size).floor() * grid_size) as i32;
-        let start_y = ((-viewport.offset.y / grid_size).floor() * grid_size) as i32;
-        let end_x = ((rect.width() - viewport.offset.x) / grid_size).ceil() as i32;
-        let end_y = ((rect.height() - viewport.offset.y) / grid_size).ceil() as i32;
+        // 根据缩放级别选择合适的网格大小，避免网格太密或太稀
+        let base_grid = 20.0;
+        let screen_grid = base_grid * viewport.zoom;
+
+        // 网格太小时放大步长，太大时缩小步长
+        let (grid_step, major_step) = if screen_grid < 8.0 {
+            // 缩得太小，用5倍网格
+            (base_grid * 5.0, 5)
+        } else if screen_grid < 15.0 {
+            // 稍小，用2倍网格
+            (base_grid * 2.0, 5)
+        } else if screen_grid > 80.0 {
+            // 放得太大，用0.5倍网格
+            (base_grid * 0.5, 10)
+        } else {
+            (base_grid, 5)
+        };
+
+        let screen_step = grid_step * viewport.zoom;
+
+        // 计算可见范围内的网格线数量
+        let offset_x = viewport.offset.x % screen_step;
+        let offset_y = viewport.offset.y % screen_step;
+
+        let count_x = (rect.width() / screen_step).ceil() as i32 + 1;
+        let count_y = (rect.height() / screen_step).ceil() as i32 + 1;
+
+        // 计算起始网格索引（用于判断是否是主网格线）
+        let start_idx_x = ((-viewport.offset.x) / screen_step).floor() as i32;
+        let start_idx_y = ((-viewport.offset.y) / screen_step).floor() as i32;
 
         // 绘制垂直线
-        for i in start_x..=end_x {
-            let x = i as f32 * grid_size + viewport.offset.x + rect.min.x;
-            let color = if i % 5 == 0 { major_grid_color } else { grid_color };
+        for i in 0..count_x {
+            let x = rect.min.x + offset_x + i as f32 * screen_step;
+            if x < rect.min.x || x > rect.max.x {
+                continue;
+            }
+            let idx = start_idx_x + i;
+            let color = if idx % major_step == 0 { major_grid_color } else { grid_color };
             painter.line_segment(
                 [Pos2::new(x, rect.min.y), Pos2::new(x, rect.max.y)],
                 Stroke::new(1.0, color),
@@ -30,9 +60,13 @@ impl Canvas {
         }
 
         // 绘制水平线
-        for i in start_y..=end_y {
-            let y = i as f32 * grid_size + viewport.offset.y + rect.min.y;
-            let color = if i % 5 == 0 { major_grid_color } else { grid_color };
+        for i in 0..count_y {
+            let y = rect.min.y + offset_y + i as f32 * screen_step;
+            if y < rect.min.y || y > rect.max.y {
+                continue;
+            }
+            let idx = start_idx_y + i;
+            let color = if idx % major_step == 0 { major_grid_color } else { grid_color };
             painter.line_segment(
                 [Pos2::new(rect.min.x, y), Pos2::new(rect.max.x, y)],
                 Stroke::new(1.0, color),

@@ -29,7 +29,7 @@ impl BlockWidget {
         let header_color = Self::parse_color(&definition.meta.color);
         let body_color = Color32::from_rgb(40, 40, 44);
         let border_color = if block.selected {
-            Color32::from_rgb(255, 200, 50)
+            Color32::from_rgb(255, 100, 100)  // 红色选中边框
         } else {
             Color32::from_gray(70)
         };
@@ -75,12 +75,13 @@ impl BlockWidget {
             Stroke::new(border_width, border_color),
         );
 
-        // 绘制标题
+        // 绘制标题（使用自定义名称或定义名称）
+        let display_name = block.display_name(definition);
         let title_pos = Pos2::new(pos.x + 8.0 * viewport.zoom, pos.y + 6.0 * viewport.zoom);
         painter.text(
             title_pos,
             egui::Align2::LEFT_TOP,
-            &definition.meta.name,
+            display_name,
             FontId::proportional(12.0 * viewport.zoom),
             Color32::WHITE,
         );

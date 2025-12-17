@@ -26,6 +26,10 @@ pub struct Block {
     pub position: Vec2,
     pub size: Vec2,
 
+    /// 自定义名称（覆盖定义名称）
+    #[serde(default)]
+    pub custom_name: Option<String>,
+
     // 运行时值
     pub input_values: HashMap<String, Value>,
     pub output_values: HashMap<String, Value>,
@@ -65,6 +69,7 @@ impl Block {
             script_id: definition.meta.id.clone(),
             position,
             size,
+            custom_name: None,
             input_values,
             output_values,
             properties,
@@ -73,6 +78,11 @@ impl Block {
             collapsed: false,
             group_id: None,
         }
+    }
+
+    /// 获取显示名称（自定义名称优先）
+    pub fn display_name<'a>(&'a self, definition: &'a BlockDefinition) -> &'a str {
+        self.custom_name.as_deref().unwrap_or(&definition.meta.name)
     }
 
     /// 获取输入端口的屏幕位置

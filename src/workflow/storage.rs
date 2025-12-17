@@ -1,13 +1,26 @@
 //! 蓝图存储模块
 //! 支持 .L (Legna明文) 和 .LZ (Legna加密) 格式
+//!
+//! 两种保护机制：
+//! 1. **打开密码**：存储在Workflow.password_hash中，打开时需要验证
+//! 2. **加密**：.LZ文件使用"Legna"固定密钥AES加密，保护文件内容不被查看
+//!
 //! 文件命名：
-//!   - xxx.L / xxx.LZ - 可编辑版本
+//!   - xxx.L - 明文版本（可设置打开密码）
+//!   - xxx.LZ - 加密版本（固定密钥加密 + 可设置打开密码）
 //!   - xxx.dist.L / xxx.dist.LZ - 可分发版本（只读）
 
 use super::Workflow;
+use aes::cipher::{block_padding::Pkcs7, BlockDecryptMut, BlockEncryptMut, KeyIvInit};
 use anyhow::{anyhow, Result};
 use std::fs;
 use std::path::Path;
+
+/// 固定加密密钥
+const ENCRYPTION_KEY: &str = "Legna";
+
+type Aes128CbcEnc = cbc::Encryptor<aes::Aes128>;
+type Aes128CbcDec = cbc::Decryptor<aes::Aes128>;
 
 /// 蓝图文件格式
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -63,8 +76,8 @@ impl BlueprintStorage {
         Ok((editable_path, dist_path))
     }
 
-    /// 内部保存函数
-    fn save_internal(workflow: &Workflow, path: &Path, password: Option<&str>) -> Result<()> {
+    /// 内部保存函数（加密使用固定密钥，不需要用户密码）
+    fn save_internal(workflow: &Workflow, path: &Path, _password: Option<&str>) -> Result<()> {
         let ext = path.extension()
             .and_then(|e| e.to_str())
             .unwrap_or("L");
@@ -79,11 +92,8 @@ impl BlueprintStorage {
                 fs::write(path, json)?;
             }
             BlueprintFormat::LegnaEncrypted => {
-                let password = password.ok_or_else(|| anyhow!("加密文件需要密码"))?;
-                if password.len() > 32 {
-                    return Err(anyhow!("密码长度不能超过32位"));
-                }
-                let encrypted = Self::encrypt(&json, password)?;
+                // 使用固定密钥加密
+                let encrypted = Self::encrypt(&json)?;
                 fs::write(path, encrypted)?;
             }
         }
@@ -91,8 +101,8 @@ impl BlueprintStorage {
         Ok(())
     }
 
-    /// 从文件加载蓝图
-    pub fn load(path: &Path, password: Option<&str>) -> Result<Workflow> {
+    /// 从文件加载蓝图（加密文件自动解密，打开密码需要调用者验证）
+    pub fn load(path: &Path, _password: Option<&str>) -> Result<Workflow> {
         let ext = path.extension()
             .and_then(|e| e.to_str())
             .unwrap_or("L");
@@ -107,8 +117,8 @@ impl BlueprintStorage {
                 String::from_utf8(content)?
             }
             BlueprintFormat::LegnaEncrypted => {
-                let password = password.ok_or_else(|| anyhow!("加密文件需要密码"))?;
-                Self::decrypt(&content, password)?
+                // 使用固定密钥解密
+                Self::decrypt(&content)?
             }
         };
 
@@ -116,50 +126,62 @@ impl BlueprintStorage {
         Ok(workflow)
     }
 
-    /// 简单的XOR加密 (生产环境应使用AES)
-    fn encrypt(data: &str, password: &str) -> Result<Vec<u8>> {
-        let key = Self::derive_key(password);
-        let mut encrypted = Vec::with_capacity(data.len() + 8);
+    /// AES-128-CBC加密（使用固定密钥"Legna"）
+    fn encrypt(data: &str) -> Result<Vec<u8>> {
+        let (key, iv) = Self::derive_key_iv();
 
-        // 添加魔数标识
-        encrypted.extend_from_slice(b"LEGNA_LZ");
+        let data_bytes = data.as_bytes();
+        // 计算需要的缓冲区大小（PKCS7填充）
+        let block_size = 16;
+        let padded_len = (data_bytes.len() / block_size + 1) * block_size;
+        let mut buf = vec![0u8; padded_len];
+        buf[..data_bytes.len()].copy_from_slice(data_bytes);
 
-        // XOR加密
-        for (i, byte) in data.as_bytes().iter().enumerate() {
-            encrypted.push(byte ^ key[i % key.len()]);
-        }
+        let ct = Aes128CbcEnc::new(&key.into(), &iv.into())
+            .encrypt_padded_mut::<Pkcs7>(&mut buf, data_bytes.len())
+            .map_err(|_| anyhow!("加密失败"))?;
 
-        Ok(encrypted)
+        // 添加魔数 + 加密数据
+        let mut result = Vec::with_capacity(ct.len() + 8);
+        result.extend_from_slice(b"LEGNA_LZ");
+        result.extend_from_slice(ct);
+
+        Ok(result)
     }
 
-    /// 解密
-    fn decrypt(data: &[u8], password: &str) -> Result<String> {
+    /// AES-128-CBC解密（使用固定密钥"Legna"）
+    fn decrypt(data: &[u8]) -> Result<String> {
         // 检查魔数
         if data.len() < 8 || &data[0..8] != b"LEGNA_LZ" {
             return Err(anyhow!("不是有效的LZ加密文件"));
         }
 
-        let key = Self::derive_key(password);
+        let (key, iv) = Self::derive_key_iv();
         let encrypted = &data[8..];
 
-        // XOR解密
-        let decrypted: Vec<u8> = encrypted.iter()
-            .enumerate()
-            .map(|(i, byte)| byte ^ key[i % key.len()])
-            .collect();
+        let mut buf = encrypted.to_vec();
+        let pt = Aes128CbcDec::new(&key.into(), &iv.into())
+            .decrypt_padded_mut::<Pkcs7>(&mut buf)
+            .map_err(|_| anyhow!("解密失败：文件损坏"))?;
 
-        String::from_utf8(decrypted)
-            .map_err(|_| anyhow!("密码错误或文件损坏"))
+        String::from_utf8(pt.to_vec())
+            .map_err(|_| anyhow!("解密失败：数据格式错误"))
     }
 
-    /// 从密码派生密钥
-    fn derive_key(password: &str) -> Vec<u8> {
-        let mut key = vec![0u8; 32];
-        for (i, byte) in password.as_bytes().iter().enumerate() {
-            key[i % 32] ^= byte;
-            key[(i + 1) % 32] = key[(i + 1) % 32].wrapping_add(*byte);
+    /// 从固定密钥"Legna"派生AES-128密钥和IV
+    fn derive_key_iv() -> ([u8; 16], [u8; 16]) {
+        // 简单的密钥派生：重复密钥填充到16字节
+        let key_bytes = ENCRYPTION_KEY.as_bytes();
+        let mut key = [0u8; 16];
+        let mut iv = [0u8; 16];
+
+        for i in 0..16 {
+            key[i] = key_bytes[i % key_bytes.len()];
+            // IV使用密钥的反转+偏移
+            iv[i] = key_bytes[key_bytes.len() - 1 - i % key_bytes.len()] ^ (i as u8);
         }
-        key
+
+        (key, iv)
     }
 }
 
@@ -170,10 +192,9 @@ mod tests {
     #[test]
     fn test_encrypt_decrypt() {
         let data = "Hello, World!";
-        let password = "secret123";
 
-        let encrypted = BlueprintStorage::encrypt(data, password).unwrap();
-        let decrypted = BlueprintStorage::decrypt(&encrypted, password).unwrap();
+        let encrypted = BlueprintStorage::encrypt(data).unwrap();
+        let decrypted = BlueprintStorage::decrypt(&encrypted).unwrap();
 
         assert_eq!(data, decrypted);
     }

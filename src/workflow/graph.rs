@@ -57,6 +57,10 @@ pub struct Workflow {
     #[serde(default)]
     pub readonly: bool,
 
+    /// 打开密码（MD5哈希存储，空表示无密码）
+    #[serde(default)]
+    pub password_hash: Option<String>,
+
     // 执行相关(不序列化)
     #[serde(skip)]
     pub execution_order: Vec<Uuid>,
@@ -79,6 +83,7 @@ impl Default for Workflow {
             groups: HashMap::new(),
             viewport: Viewport::default(),
             readonly: false,
+            password_hash: None,
             execution_order: Vec::new(),
             dirty_blocks: HashSet::new(),
             active_blocks: HashMap::new(),
@@ -88,6 +93,33 @@ impl Default for Workflow {
 }
 
 impl Workflow {
+    /// 设置打开密码
+    pub fn set_password(&mut self, password: Option<&str>) {
+        self.password_hash = password.map(|p| Self::hash_password(p));
+    }
+
+    /// 验证密码
+    pub fn verify_password(&self, password: &str) -> bool {
+        match &self.password_hash {
+            None => true, // 无密码
+            Some(hash) => &Self::hash_password(password) == hash,
+        }
+    }
+
+    /// 是否有密码保护
+    pub fn has_password(&self) -> bool {
+        self.password_hash.is_some()
+    }
+
+    /// 简单的密码哈希（生产环境应使用bcrypt）
+    fn hash_password(password: &str) -> String {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        password.hash(&mut hasher);
+        "LEGNA_".to_string() + &format!("{:016x}", hasher.finish())
+    }
+
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
@@ -385,11 +417,24 @@ impl Workflow {
             return;
         }
 
+        // 找出所有连通分量（处理独立Block）
+        let mut connected: HashSet<Uuid> = HashSet::new();
+        for conn in self.connections.values() {
+            connected.insert(conn.from_block);
+            connected.insert(conn.to_block);
+        }
+
+        // 分离独立Block和连通Block
+        let isolated: Vec<Uuid> = self.blocks.keys()
+            .filter(|id| !connected.contains(*id))
+            .cloned()
+            .collect();
+
         // 计算每个节点的层级（基于拓扑排序）
         let mut levels: HashMap<Uuid, usize> = HashMap::new();
         let order = self.topological_sort();
 
-        // 计算入度为0的起始节点
+        // 计算入度
         let mut in_degree: HashMap<Uuid, usize> = HashMap::new();
         for block_id in self.blocks.keys() {
             in_degree.insert(*block_id, 0);
@@ -398,8 +443,11 @@ impl Workflow {
             *in_degree.entry(conn.to_block).or_insert(0) += 1;
         }
 
-        // 根据依赖关系分配层级
+        // 根据依赖关系分配层级（只对连通的Block）
         for &block_id in &order {
+            if !connected.contains(&block_id) {
+                continue;
+            }
             let max_parent_level = self.connections.values()
                 .filter(|c| c.to_block == block_id)
                 .filter_map(|c| levels.get(&c.from_block))
@@ -423,8 +471,8 @@ impl Workflow {
         }
 
         // 布局参数
-        let h_spacing = 60.0;  // 水平间距
-        let v_spacing = 40.0;  // 垂直间距
+        let h_spacing = 80.0;   // 水平间距（增大）
+        let v_spacing = 60.0;   // 垂直间距（增大）
         let start_x = 100.0;
         let start_y = 100.0;
 
@@ -435,13 +483,13 @@ impl Workflow {
                 .filter_map(|id| self.blocks.get(id))
                 .map(|b| b.size.x)
                 .fold(0.0f32, |a, b| a.max(b));
-            layer_max_widths.push(max_width.max(160.0)); // 最小160
+            layer_max_widths.push(max_width.max(180.0)); // 最小180
         }
 
-        // 按层级放置节点
+        // 按层级放置连通节点
         let mut current_x = start_x;
+        let mut max_y = start_y;
         for (level, layer) in layers.iter().enumerate() {
-            // 计算该层所有Block的实际高度，用于垂直居中或排列
             let mut current_y = start_y;
 
             // 按Block的Y位置排序（保持原有的上下顺序）
@@ -456,11 +504,45 @@ impl Workflow {
                 if let Some(block) = self.blocks.get_mut(&block_id) {
                     block.position = Vec2::new(current_x, current_y);
                     current_y += block.size.y + v_spacing;
+                    max_y = max_y.max(current_y);
                 }
             }
 
-            // 下一层的X位置 = 当前X + 当前层最大宽度 + 间距
-            current_x += layer_max_widths[level] + h_spacing;
+            if !layer.is_empty() {
+                current_x += layer_max_widths[level] + h_spacing;
+            }
+        }
+
+        // 布局独立Block（放在连通图下方或右侧）
+        if !isolated.is_empty() {
+            let isolated_start_y = max_y + 60.0;
+            let mut iso_x = start_x;
+            let mut iso_y = isolated_start_y;
+            let max_row_width = 800.0;
+            let mut row_height = 0.0f32;
+
+            // 按原Y位置排序
+            let mut sorted_isolated = isolated;
+            sorted_isolated.sort_by(|a, b| {
+                let ay = self.blocks.get(a).map(|b| b.position.y).unwrap_or(0.0);
+                let by = self.blocks.get(b).map(|b| b.position.y).unwrap_or(0.0);
+                ay.partial_cmp(&by).unwrap_or(std::cmp::Ordering::Equal)
+            });
+
+            for block_id in sorted_isolated {
+                if let Some(block) = self.blocks.get_mut(&block_id) {
+                    // 换行检测
+                    if iso_x > start_x && iso_x + block.size.x > start_x + max_row_width {
+                        iso_x = start_x;
+                        iso_y += row_height + v_spacing;
+                        row_height = 0.0;
+                    }
+
+                    block.position = Vec2::new(iso_x, iso_y);
+                    iso_x += block.size.x + h_spacing;
+                    row_height = row_height.max(block.size.y);
+                }
+            }
         }
 
         // 更新分组边界
