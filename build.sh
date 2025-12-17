@@ -5,7 +5,6 @@
 
 set -e
 
-VERSION="0.1.0"
 APP_NAME="workflow_engine"
 DIST_DIR="dist"
 
@@ -18,6 +17,34 @@ NC='\033[0m'
 log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
+
+# 从 Cargo.toml 读取当前版本
+get_version() {
+    grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/'
+}
+
+# 递增 patch 版本 (0.1.0 -> 0.1.1)
+increment_version() {
+    local version=$1
+    local major minor patch
+    IFS='.' read -r major minor patch <<< "$version"
+    patch=$((patch + 1))
+    echo "${major}.${minor}.${patch}"
+}
+
+# 更新 Cargo.toml 中的版本号
+update_cargo_version() {
+    local new_version=$1
+    local old_version=$2
+    sed -i.bak "s/^version = \".*\"/version = \"${new_version}\"/" Cargo.toml
+    rm -f Cargo.toml.bak
+    log_info "版本更新: $old_version -> $new_version"
+}
+
+# 获取并递增版本
+OLD_VERSION=$(get_version)
+VERSION=$(increment_version "$OLD_VERSION")
+update_cargo_version "$VERSION" "$OLD_VERSION"
 
 # 创建发布包
 create_package() {

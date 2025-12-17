@@ -3,13 +3,43 @@
 
 $ErrorActionPreference = "Stop"
 
-$VERSION = "0.1.0"
 $APP_NAME = "workflow_engine"
 $DIST_DIR = "dist"
 
 function Log-Info { param($msg) Write-Host "[INFO] $msg" -ForegroundColor Green }
 function Log-Warn { param($msg) Write-Host "[WARN] $msg" -ForegroundColor Yellow }
 function Log-Error { param($msg) Write-Host "[ERROR] $msg" -ForegroundColor Red }
+
+# 从 Cargo.toml 读取版本号
+function Get-CargoVersion {
+    $content = Get-Content Cargo.toml -Raw
+    if ($content -match 'version\s*=\s*"([^"]+)"') {
+        return $matches[1]
+    }
+    return "0.1.0"
+}
+
+# 递增 patch 版本
+function Increment-Version {
+    param($Version)
+    $parts = $Version -split '\.'
+    $parts[2] = [int]$parts[2] + 1
+    return $parts -join '.'
+}
+
+# 更新 Cargo.toml 版本号
+function Update-CargoVersion {
+    param($NewVersion)
+    $content = Get-Content Cargo.toml -Raw
+    $content = $content -replace 'version\s*=\s*"[^"]+"', "version = `"$NewVersion`""
+    Set-Content Cargo.toml $content -NoNewline
+}
+
+# 获取并递增版本
+$OLD_VERSION = Get-CargoVersion
+$VERSION = Increment-Version $OLD_VERSION
+Update-CargoVersion $VERSION
+Log-Info "版本更新: $OLD_VERSION -> $VERSION"
 
 # 创建发布包
 function Create-Package {
