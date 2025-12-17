@@ -251,7 +251,8 @@ impl WorkflowApp {
         }
     }
 
-    /// 格式化值为JSON风格字符串
+    /// 格式化值为JSON风格字符串（紧凑）
+    #[allow(dead_code)]
     fn format_value_json(value: &crate::script::Value) -> String {
         use crate::script::Value;
         match value {
@@ -268,6 +269,63 @@ impl WorkflowApp {
                     .map(|(k, v)| format!("\"{}\": {}", k, Self::format_value_json(v)))
                     .collect();
                 format!("{{{}}}", items.join(", "))
+            }
+        }
+    }
+
+    /// 格式化值为易读的字符串（支持换行，美观）
+    fn format_value_pretty(value: &crate::script::Value) -> String {
+        Self::format_value_pretty_indent(value, 0)
+    }
+
+    fn format_value_pretty_indent(value: &crate::script::Value, indent: usize) -> String {
+        use crate::script::Value;
+        let prefix = "  ".repeat(indent);
+        let child_prefix = "  ".repeat(indent + 1);
+
+        match value {
+            Value::Nil => "null".to_string(),
+            Value::Boolean(b) => if *b { "true" } else { "false" }.to_string(),
+            Value::Number(n) => {
+                // 整数显示为整数，浮点数保留精度
+                if n.fract() == 0.0 && n.abs() < 1e10 {
+                    format!("{}", *n as i64)
+                } else {
+                    format!("{}", n)
+                }
+            }
+            Value::String(s) => {
+                // 字符串不加引号，更易读
+                s.clone()
+            }
+            Value::Array(arr) => {
+                if arr.is_empty() {
+                    "[]".to_string()
+                } else if arr.len() <= 3 && arr.iter().all(|v| match v {
+                    Value::Number(_) | Value::Boolean(_) => true,
+                    Value::String(s) => s.len() < 20,
+                    _ => false,
+                }) {
+                    // 短数组单行显示
+                    let items: Vec<String> = arr.iter().map(|v| Self::format_value_pretty_indent(v, 0)).collect();
+                    format!("[{}]", items.join(", "))
+                } else {
+                    // 长数组多行显示
+                    let items: Vec<String> = arr.iter()
+                        .map(|v| format!("{}{}", child_prefix, Self::format_value_pretty_indent(v, indent + 1)))
+                        .collect();
+                    format!("[\n{}\n{}]", items.join(",\n"), prefix)
+                }
+            }
+            Value::Object(map) => {
+                if map.is_empty() {
+                    "{}".to_string()
+                } else {
+                    let items: Vec<String> = map.iter()
+                        .map(|(k, v)| format!("{}{}: {}", child_prefix, k, Self::format_value_pretty_indent(v, indent + 1)))
+                        .collect();
+                    format!("{{\n{}\n{}}}", items.join(",\n"), prefix)
+                }
             }
         }
     }
@@ -516,49 +574,92 @@ impl eframe::App for WorkflowApp {
         // 底部日志面板
         if self.show_log_panel {
             egui::TopBottomPanel::bottom("log_panel")
-                .min_height(80.0)
-                .max_height(150.0)
+                .min_height(100.0)
+                .max_height(300.0)
                 .resizable(true)
                 .show(ctx, |ui| {
                     ui.horizontal(|ui| {
-                        ui.heading("Block输出");
+                        ui.heading("📋 Block输出");
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.button("隐藏").clicked() {
+                            if ui.button("✕ 隐藏").clicked() {
                                 self.show_log_panel = false;
                             }
                         });
                     });
                     ui.separator();
-                    egui::ScrollArea::vertical()
+
+                    // 水平滚动 + 垂直滚动
+                    egui::ScrollArea::both()
                         .auto_shrink([false; 2])
                         .show(ui, |ui| {
+                            // 使用等宽字体显示日志
+                            let available_width = ui.available_width();
+
                             // 显示每个Block的输出值
                             for block in self.workflow.blocks.values() {
                                 if let Some(def) = self.registry.get(&block.script_id) {
-                                    ui.collapsing(format!("📦 {}", def.meta.name), |ui| {
-                                        // 显示输出
-                                        for output in &def.outputs {
-                                            if let Some(value) = block.output_values.get(&output.id) {
-                                                let val_str = Self::format_value_json(value);
-                                                ui.horizontal(|ui| {
-                                                    ui.colored_label(egui::Color32::LIGHT_BLUE, format!("{}:", output.name));
-                                                    ui.label(val_str);
-                                                });
+                                    // 使用自定义名称
+                                    let display_name = block.display_name(def);
+                                    let header_id = egui::Id::new(block.id).with("log_header");
+
+                                    egui::CollapsingHeader::new(format!("📦 {}", display_name))
+                                        .id_salt(header_id)
+                                        .default_open(true)
+                                        .show(ui, |ui| {
+                                            // 设置最小宽度确保换行
+                                            ui.set_min_width(available_width - 20.0);
+
+                                            // 显示输出
+                                            for output in &def.outputs {
+                                                if let Some(value) = block.output_values.get(&output.id) {
+                                                    let val_str = Self::format_value_pretty(value);
+                                                    ui.horizontal_wrapped(|ui| {
+                                                        ui.colored_label(egui::Color32::from_rgb(100, 180, 255), format!("{}:", output.name));
+                                                    });
+                                                    // 使用代码框显示值，支持换行
+                                                    egui::Frame::none()
+                                                        .fill(egui::Color32::from_rgb(30, 30, 35))
+                                                        .rounding(4.0)
+                                                        .inner_margin(egui::Margin::same(6.0))
+                                                        .show(ui, |ui| {
+                                                            ui.set_min_width(available_width - 40.0);
+                                                            ui.add(egui::Label::new(
+                                                                egui::RichText::new(&val_str)
+                                                                    .monospace()
+                                                                    .size(11.0)
+                                                                    .color(egui::Color32::from_rgb(200, 220, 200))
+                                                            ).wrap());
+                                                        });
+                                                    ui.add_space(4.0);
+                                                }
                                             }
-                                        }
-                                        // 显示状态
-                                        if !block.state.is_empty() {
-                                            ui.separator();
-                                            ui.label("状态:");
-                                            for (key, value) in &block.state {
-                                                let val_str = Self::format_value_json(value);
-                                                ui.horizontal(|ui| {
-                                                    ui.colored_label(egui::Color32::from_rgb(255, 100, 100), format!("{}:", key));
-                                                    ui.label(val_str);
-                                                });
+
+                                            // 显示状态
+                                            if !block.state.is_empty() {
+                                                ui.separator();
+                                                ui.colored_label(egui::Color32::from_rgb(255, 180, 100), "状态:");
+                                                for (key, value) in &block.state {
+                                                    let val_str = Self::format_value_pretty(value);
+                                                    ui.horizontal_wrapped(|ui| {
+                                                        ui.colored_label(egui::Color32::from_rgb(255, 100, 100), format!("  {}:", key));
+                                                    });
+                                                    egui::Frame::none()
+                                                        .fill(egui::Color32::from_rgb(35, 30, 30))
+                                                        .rounding(4.0)
+                                                        .inner_margin(egui::Margin::same(6.0))
+                                                        .show(ui, |ui| {
+                                                            ui.set_min_width(available_width - 40.0);
+                                                            ui.add(egui::Label::new(
+                                                                egui::RichText::new(&val_str)
+                                                                    .monospace()
+                                                                    .size(11.0)
+                                                                    .color(egui::Color32::from_rgb(220, 200, 200))
+                                                            ).wrap());
+                                                        });
+                                                    ui.add_space(2.0);
+                                                }
                                             }
-                                        }
-                                    });
+                                        });
                                 }
                             }
                         });
