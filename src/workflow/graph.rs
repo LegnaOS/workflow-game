@@ -423,22 +423,44 @@ impl Workflow {
         }
 
         // 布局参数
-        let block_width = 160.0;
-        let block_height = 120.0;
-        let h_spacing = 80.0;
-        let v_spacing = 60.0;
+        let h_spacing = 60.0;  // 水平间距
+        let v_spacing = 40.0;  // 垂直间距
         let start_x = 100.0;
         let start_y = 100.0;
 
+        // 计算每层的最大宽度（用于X坐标）
+        let mut layer_max_widths: Vec<f32> = Vec::with_capacity(layers.len());
+        for layer in &layers {
+            let max_width = layer.iter()
+                .filter_map(|id| self.blocks.get(id))
+                .map(|b| b.size.x)
+                .fold(0.0f32, |a, b| a.max(b));
+            layer_max_widths.push(max_width.max(160.0)); // 最小160
+        }
+
         // 按层级放置节点
+        let mut current_x = start_x;
         for (level, layer) in layers.iter().enumerate() {
-            let x = start_x + level as f32 * (block_width + h_spacing);
-            for (index, &block_id) in layer.iter().enumerate() {
-                let y = start_y + index as f32 * (block_height + v_spacing);
+            // 计算该层所有Block的实际高度，用于垂直居中或排列
+            let mut current_y = start_y;
+
+            // 按Block的Y位置排序（保持原有的上下顺序）
+            let mut sorted_layer: Vec<Uuid> = layer.clone();
+            sorted_layer.sort_by(|a, b| {
+                let ay = self.blocks.get(a).map(|b| b.position.y).unwrap_or(0.0);
+                let by = self.blocks.get(b).map(|b| b.position.y).unwrap_or(0.0);
+                ay.partial_cmp(&by).unwrap_or(std::cmp::Ordering::Equal)
+            });
+
+            for block_id in sorted_layer {
                 if let Some(block) = self.blocks.get_mut(&block_id) {
-                    block.position = Vec2::new(x, y);
+                    block.position = Vec2::new(current_x, current_y);
+                    current_y += block.size.y + v_spacing;
                 }
             }
+
+            // 下一层的X位置 = 当前X + 当前层最大宽度 + 间距
+            current_x += layer_max_widths[level] + h_spacing;
         }
 
         // 更新分组边界
