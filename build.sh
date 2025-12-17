@@ -48,10 +48,9 @@ create_package() {
     fi
     
     # 复制示例工作流
-    mkdir -p "$pkg_dir/workflows"
-    if [[ -f "workflows/rpg_battle.L" ]]; then
-        cp workflows/rpg_battle.L "$pkg_dir/workflows/"
-        log_info "  ✓ 示例工作流 (workflows/rpg_battle.L)"
+    if [[ -d "workflows" ]]; then
+        cp -r workflows "$pkg_dir/"
+        log_info "  ✓ 示例工作流 (workflows/)"
     fi
     
     # 复制文档

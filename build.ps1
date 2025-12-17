@@ -38,10 +38,9 @@ function Create-Package {
     }
     
     # 复制示例工作流
-    New-Item -ItemType Directory -Path "$PkgDir\workflows" -Force | Out-Null
-    if (Test-Path "workflows\rpg_battle.L") {
-        Copy-Item "workflows\rpg_battle.L" "$PkgDir\workflows\"
-        Log-Info "  √ 示例工作流"
+    if (Test-Path "workflows") {
+        Copy-Item -Recurse workflows "$PkgDir\"
+        Log-Info "  √ 示例工作流 (workflows/)"
     }
     
     # 复制文档
