@@ -37,6 +37,12 @@ struct LogEntry {
     message: String,
 }
 
+/// 撤销/重做历史快照
+#[derive(Clone)]
+struct HistorySnapshot {
+    workflow_json: String,
+}
+
 /// 主应用
 pub struct WorkflowApp {
     registry: ScriptRegistry,
@@ -67,6 +73,10 @@ pub struct WorkflowApp {
     // 右键菜单
     context_menu_pos: Option<Pos2>,
     context_menu_target: ContextMenuTarget,
+    // 撤销/重做
+    undo_stack: Vec<HistorySnapshot>,
+    redo_stack: Vec<HistorySnapshot>,
+    last_snapshot_time: std::time::Instant,
 }
 
 /// 右键菜单目标
@@ -138,7 +148,81 @@ impl WorkflowApp {
             use_bezier_mode: false,
             context_menu_pos: None,
             context_menu_target: ContextMenuTarget::Canvas,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+            last_snapshot_time: std::time::Instant::now(),
         })
+    }
+
+    /// 保存当前状态到撤销栈
+    fn save_undo_snapshot(&mut self) {
+        // 防止频繁保存（至少间隔100ms）
+        if self.last_snapshot_time.elapsed().as_millis() < 100 {
+            return;
+        }
+
+        if let Ok(json) = serde_json::to_string(&self.workflow) {
+            self.undo_stack.push(HistorySnapshot { workflow_json: json });
+            // 保留最近50次操作
+            if self.undo_stack.len() > 50 {
+                self.undo_stack.remove(0);
+            }
+            // 新操作清空重做栈
+            self.redo_stack.clear();
+            self.last_snapshot_time = std::time::Instant::now();
+        }
+    }
+
+    /// 撤销
+    fn undo(&mut self) {
+        if self.workflow.readonly {
+            self.add_log("WARN", "只读模式，无法撤销".to_string());
+            return;
+        }
+
+        if let Some(snapshot) = self.undo_stack.pop() {
+            // 保存当前状态到重做栈
+            if let Ok(current_json) = serde_json::to_string(&self.workflow) {
+                self.redo_stack.push(HistorySnapshot { workflow_json: current_json });
+                if self.redo_stack.len() > 50 {
+                    self.redo_stack.remove(0);
+                }
+            }
+            // 恢复之前的状态
+            if let Ok(workflow) = serde_json::from_str::<Workflow>(&snapshot.workflow_json) {
+                self.workflow = workflow;
+                self.selected_connections.clear();
+                self.add_log("INFO", "已撤销".to_string());
+            }
+        } else {
+            self.add_log("INFO", "没有可撤销的操作".to_string());
+        }
+    }
+
+    /// 重做
+    fn redo(&mut self) {
+        if self.workflow.readonly {
+            self.add_log("WARN", "只读模式，无法重做".to_string());
+            return;
+        }
+
+        if let Some(snapshot) = self.redo_stack.pop() {
+            // 保存当前状态到撤销栈
+            if let Ok(current_json) = serde_json::to_string(&self.workflow) {
+                self.undo_stack.push(HistorySnapshot { workflow_json: current_json });
+                if self.undo_stack.len() > 50 {
+                    self.undo_stack.remove(0);
+                }
+            }
+            // 恢复重做状态
+            if let Ok(workflow) = serde_json::from_str::<Workflow>(&snapshot.workflow_json) {
+                self.workflow = workflow;
+                self.selected_connections.clear();
+                self.add_log("INFO", "已重做".to_string());
+            }
+        } else {
+            self.add_log("INFO", "没有可重做的操作".to_string());
+        }
     }
 
     /// 执行工作流（自动调用）
@@ -205,20 +289,27 @@ impl WorkflowApp {
         let modifiers = ctx.input(|i| i.modifiers);
 
         ctx.input(|i| {
-            // Ctrl+A 全选
-            if modifiers.ctrl && i.key_pressed(Key::A) {
-                for block in self.workflow.blocks.values_mut() {
-                    block.selected = true;
+            // 跨平台修饰键：Mac用Cmd，Windows/Linux用Ctrl
+            let cmd_or_ctrl = modifiers.command || modifiers.ctrl;
+
+            // Ctrl/Cmd+Z 撤销 / Ctrl/Cmd+Shift+Z 重做
+            if cmd_or_ctrl && i.key_pressed(Key::Z) {
+                if modifiers.shift {
+                    self.redo();
+                } else {
+                    self.undo();
                 }
+            }
+
+            // Ctrl/Cmd+Y 重做（Windows风格）
+            if cmd_or_ctrl && i.key_pressed(Key::Y) {
+                self.redo();
             }
 
             // Delete 删除
             if i.key_pressed(Key::Delete) || i.key_pressed(Key::Backspace) {
                 self.delete_selected();
             }
-
-            // 跨平台修饰键：Mac用Cmd，Windows/Linux用Ctrl
-            let cmd_or_ctrl = modifiers.command || modifiers.ctrl;
 
             // Ctrl/Cmd+C 复制
             if cmd_or_ctrl && i.key_pressed(Key::C) {
@@ -665,6 +756,7 @@ impl WorkflowApp {
             self.add_log("WARN", "只读模式，无法粘贴".to_string());
             return;
         }
+        self.save_undo_snapshot();
 
         let offset = Vec2::new(50.0, 50.0);
         let (blocks, connections) = self.clipboard.paste(offset);
@@ -690,6 +782,10 @@ impl WorkflowApp {
         }
 
         let selected_blocks: Vec<_> = self.workflow.selected_blocks();
+        let has_selection = !selected_blocks.is_empty() || !self.selected_connections.is_empty();
+        if has_selection {
+            self.save_undo_snapshot();
+        }
         for id in &selected_blocks {
             self.workflow.remove_block(*id);
         }
@@ -842,9 +938,12 @@ impl WorkflowApp {
                     self.add_log("WARN", "只读模式，无法添加Block".to_string());
                 } else if let Some(pos) = response.ctx.pointer_hover_pos() {
                     if response.rect.contains(pos) {
-                        if let Some(def) = self.registry.get(&script_id) {
+                        // 先克隆定义，避免借用冲突
+                        let def_opt = self.registry.get(&script_id).cloned();
+                        if let Some(def) = def_opt {
+                            self.save_undo_snapshot();
                             let name = def.meta.name.clone();
-                            let block = Block::new(def, canvas_pos);
+                            let block = Block::new(&def, canvas_pos);
                             self.workflow.add_block(block);
                             self.add_log("INFO", format!("添加Block: {}", name));
                         }
@@ -977,6 +1076,10 @@ impl WorkflowApp {
                 // 只读模式禁止移动Block
                 if !self.workflow.readonly {
                     let delta = response.drag_delta();
+                    // 只有真正移动时才保存快照（避免点击也保存）
+                    if delta.x.abs() > 1.0 || delta.y.abs() > 1.0 {
+                        self.save_undo_snapshot();
+                    }
                     let scale_delta = Vec2::new(
                         delta.x / self.workflow.viewport.zoom,
                         delta.y / self.workflow.viewport.zoom,
@@ -1080,6 +1183,9 @@ impl WorkflowApp {
                     self.box_select_end = None;
                 }
                 InteractionState::DraggingConnection { from, .. } => {
+                    // 克隆数据避免借用冲突
+                    let from = from.clone();
+
                     // 只读模式禁止创建连线
                     if self.workflow.readonly {
                         self.add_log("WARN", "只读模式，无法创建连线".to_string());
@@ -1087,6 +1193,7 @@ impl WorkflowApp {
                         let mut log_msg: Option<String> = None;
                         // 确保连接方向正确：output -> input
                         if from.is_output && !to_port.is_output && from.block_id != to_port.block_id {
+                            self.save_undo_snapshot();
                             let conn = Connection::new(
                                 from.block_id,
                                 from.port_id.clone(),
@@ -1096,6 +1203,7 @@ impl WorkflowApp {
                             self.workflow.add_connection(conn);
                             log_msg = Some(format!("连接: {} -> {}", from.port_id, to_port.port_id));
                         } else if !from.is_output && to_port.is_output && from.block_id != to_port.block_id {
+                            self.save_undo_snapshot();
                             let conn = Connection::new(
                                 to_port.block_id,
                                 to_port.port_id.clone(),
