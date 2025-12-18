@@ -7,7 +7,8 @@ return {
         name = "技能",
         category = "Lite",
         color = "#9C27B0",
-        description = "主动技能，消耗魔法造成伤害"
+        description = "主动技能，消耗魔法造成伤害",
+        hideable = true
     },
 
     properties = {

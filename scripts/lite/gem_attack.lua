@@ -7,7 +7,8 @@ return {
         name = "攻击宝石",
         category = "Lite",
         color = "#F44336",
-        description = "红色宝石，增加攻击力"
+        description = "红色宝石，增加攻击力",
+        hideable = true
     },
 
     properties = {

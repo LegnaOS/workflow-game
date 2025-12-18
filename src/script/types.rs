@@ -100,6 +100,9 @@ pub struct BlockMeta {
     /// 下拉选项（用于Dropdown类型）
     #[serde(default)]
     pub options: Vec<String>,
+    /// 预览模式下可隐藏（有连线时隐藏，孤立时显示）
+    #[serde(default)]
+    pub hideable: bool,
 }
 
 fn default_color() -> String {

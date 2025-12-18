@@ -5,7 +5,8 @@ return {
         name = "常量",
         category = "数学",
         description = "输出一个固定的数值",
-        color = "#2196F3"
+        color = "#2196F3",
+        hideable = true
     },
     
     inputs = {},

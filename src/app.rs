@@ -2075,6 +2075,7 @@ impl WorkflowApp {
                 // - 被选中的块展开为 Full
                 // - 连接拖拽源块展开为 Full
                 // - 连接拖拽目标块展开为 Full
+                // - hideable 块：有连线时隐藏，孤立时显示为 Mini
                 // - 其他显示为 Mini
 
                 // 检查是否为连接拖拽源块
@@ -2084,13 +2085,42 @@ impl WorkflowApp {
                     false
                 };
 
+                // 检查是否为 hideable 块
+                let block = self.workflow.blocks.get(&block_id);
+                let is_hideable = block
+                    .and_then(|b| self.registry.get(&b.script_id))
+                    .map(|def| def.meta.hideable)
+                    .unwrap_or(false);
+
+                // 检查块是否有连线
+                let has_connections = self.workflow.connections.values()
+                    .any(|c| c.from_block == block_id || c.to_block == block_id);
+
+                // hideable 块且有连线时隐藏
+                if is_hideable && has_connections {
+                    // 但如果正在 hover 或拖拽则展开
+                    if Some(block_id) == self.hovered_block_id {
+                        return BlockDisplayMode::Full;
+                    }
+                    if Some(block_id) == self.connection_target_block {
+                        return BlockDisplayMode::Full;
+                    }
+                    if is_dragging_source {
+                        return BlockDisplayMode::Full;
+                    }
+                    if block.map(|b| b.selected).unwrap_or(false) {
+                        return BlockDisplayMode::Full;
+                    }
+                    return BlockDisplayMode::Hidden;
+                }
+
                 if Some(block_id) == self.hovered_block_id {
                     BlockDisplayMode::Full
                 } else if Some(block_id) == self.connection_target_block {
                     BlockDisplayMode::Full
                 } else if is_dragging_source {
                     BlockDisplayMode::Full
-                } else if self.workflow.blocks.get(&block_id).map(|b| b.selected).unwrap_or(false) {
+                } else if block.map(|b| b.selected).unwrap_or(false) {
                     BlockDisplayMode::Full
                 } else {
                     BlockDisplayMode::Mini

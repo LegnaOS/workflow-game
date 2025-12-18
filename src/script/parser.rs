@@ -106,6 +106,9 @@ impl ScriptParser {
             Vec::new()
         };
 
+        // 解析 hideable 属性
+        let hideable: bool = meta.get("hideable").unwrap_or(false);
+
         Ok(BlockMeta {
             id,
             name,
@@ -117,6 +120,7 @@ impl ScriptParser {
             widget,
             placeholder,
             options,
+            hideable,
         })
     }
 

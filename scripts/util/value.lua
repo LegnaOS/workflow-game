@@ -7,7 +7,8 @@ return {
         name = "常量",
         category = "工具",
         description = "输出一个常量值",
-        color = "#795548"
+        color = "#795548",
+        hideable = true
     },
 
     properties = {

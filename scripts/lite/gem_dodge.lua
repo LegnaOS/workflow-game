@@ -7,7 +7,8 @@ return {
         name = "闪避宝石",
         category = "Lite",
         color = "#8BC34A",
-        description = "绿色宝石，增加闪避率"
+        description = "绿色宝石，增加闪避率",
+        hideable = true
     },
 
     properties = {

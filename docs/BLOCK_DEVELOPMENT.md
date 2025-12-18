@@ -56,7 +56,8 @@ return {
         name = "显示名称",          -- UI显示名称
         category = "分类",          -- 分类名称
         description = "描述文字",   -- 悬停提示
-        color = "#4CAF50"          -- 十六进制颜色
+        color = "#4CAF50",         -- 十六进制颜色
+        hideable = false           -- 预览模式下可隐藏（可选，默认false）
     },
 
     -- 属性定义（可编辑参数）
@@ -400,6 +401,20 @@ Block 可以包含交互控件（输入框、按钮等），通过在 `meta` 中
 | `widget` | string | 控件类型 |
 | `placeholder` | string | 占位符/提示文字 |
 | `options` | array | 下拉选项（dropdown 类型） |
+| `hideable` | boolean | 预览模式下可隐藏（默认 false） |
+
+### hideable 属性
+
+当 `hideable = true` 时，该 Block 在预览模式下的行为：
+- **有连线时**：Block 被隐藏，不显示在画布上
+- **孤立时（无连线）**：Block 以 Mini 模式显示
+- **悬停/选中时**：临时展开为完整模式
+
+适合设置 `hideable = true` 的 Block 类型：
+- 常量值节点（只输出固定值）
+- 宝石/装备附件（镶嵌到主装备上）
+- 技能节点（连接到角色上）
+- 其他"叶子节点"（无输入端口，只提供数据）
 
 ### 示例：文本输入 Block
 
