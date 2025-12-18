@@ -100,13 +100,20 @@ impl MemoryExecutor {
 
         if let Ok(execute_fn) = script_table.get::<mlua::Function>("execute") {
             if let Ok(result) = execute_fn.call::<Table>((self_table.clone(), inputs_table)) {
-                // 更新state
+                // 更新state 和处理动画
                 if let Ok(new_state) = self_table.get::<Table>("state") {
                     if let Some(block) = workflow.blocks.get_mut(&block_id) {
-                        for pair in new_state.pairs::<String, LuaValue>() {
+                        for pair in new_state.clone().pairs::<String, LuaValue>() {
                             if let Ok((k, v)) = pair {
                                 if let Ok(val) = self.lua_to_value(v) { block.state.insert(k, val); }
                             }
+                        }
+                        // 处理动画设置：从state中读取_animation表
+                        if let Ok(animation_table) = new_state.get::<Table>("_animation") {
+                            let offset_x = animation_table.get::<f32>("x").unwrap_or(0.0);
+                            let offset_y = animation_table.get::<f32>("y").unwrap_or(0.0);
+                            let speed = animation_table.get::<f32>("speed").ok();
+                            block.set_animation_target(offset_x, offset_y, speed);
                         }
                     }
                 }
@@ -118,6 +125,8 @@ impl MemoryExecutor {
                         }
                     }
                 }
+                // 激活Block和连线（用于动画）
+                workflow.activate_block(block_id);
             }
         }
         Ok(())
@@ -188,6 +197,8 @@ struct PlayerApp {
     execution_speed: f32,
     auto_execute: bool,
     error_message: Option<String>,
+    show_log_panel: bool,
+    hovered_block: Option<Uuid>,
 }
 
 impl PlayerApp {
@@ -220,6 +231,8 @@ impl PlayerApp {
             execution_speed: 10.0,
             auto_execute: true,
             error_message: None,
+            show_log_panel: true,
+            hovered_block: None,
         })
     }
 
@@ -238,6 +251,14 @@ impl PlayerApp {
 
 impl eframe::App for PlayerApp {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
+        // 更新Block动画（假设60fps，delta_time ≈ 0.016秒）
+        let delta_time = 1.0 / 60.0;
+        for block in self.workflow.blocks.values_mut() {
+            block.update_animation(delta_time);
+        }
+        // 衰减激活状态（连线流动效果）
+        self.workflow.decay_activation(0.05);
+
         // 自动执行
         let interval = 1.0 / self.execution_speed.max(0.1);
         if self.auto_execute && self.last_execute_time.elapsed().as_secs_f32() >= interval {
@@ -263,12 +284,62 @@ impl eframe::App for PlayerApp {
                     self.run_workflow();
                 }
 
+                ui.separator();
+                let log_text = if self.show_log_panel { "📋" } else { "📋 日志" };
+                if ui.button(log_text).clicked() {
+                    self.show_log_panel = !self.show_log_panel;
+                }
+
                 if let Some(ref err) = self.error_message {
                     ui.separator();
                     ui.colored_label(egui::Color32::RED, err);
                 }
             });
         });
+
+        // 日志面板
+        if self.show_log_panel {
+            egui::SidePanel::right("log_panel")
+                .min_width(200.0)
+                .max_width(400.0)
+                .resizable(true)
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.strong("📋 输出日志");
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.small_button("✕").clicked() {
+                                self.show_log_panel = false;
+                            }
+                        });
+                    });
+                    ui.separator();
+
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false; 2])
+                        .show(ui, |ui| {
+                            for block in self.workflow.blocks.values() {
+                                if let Some(def) = self.registry.get(&block.script_id) {
+                                    let display_name = block.display_name(def);
+
+                                    egui::CollapsingHeader::new(
+                                        egui::RichText::new(display_name).size(11.0)
+                                    )
+                                    .default_open(false)
+                                    .show(ui, |ui| {
+                                        // 显示 output_values
+                                        for (key, val) in &block.output_values {
+                                            let val_str = format!("{:?}", val);
+                                            ui.horizontal(|ui| {
+                                                ui.label(egui::RichText::new(format!("{}:", key)).size(10.0).color(egui::Color32::GRAY));
+                                                ui.label(egui::RichText::new(val_str).size(10.0));
+                                            });
+                                        }
+                                    });
+                                }
+                            }
+                        });
+                });
+        }
 
         // 主内容区 - 画布
         CentralPanel::default().show(ctx, |ui| {
@@ -278,6 +349,24 @@ impl eframe::App for PlayerApp {
             );
             let canvas_rect = response.rect;
             let canvas_offset = canvas_rect.min;
+
+            // 检测 hover
+            self.hovered_block = None;
+            if let Some(pointer) = ui.input(|i| i.pointer.hover_pos()) {
+                for (id, block) in &self.workflow.blocks {
+                    let screen_pos = Pos2::new(
+                        block.position.x * self.workflow.viewport.zoom + self.workflow.viewport.offset.x + canvas_offset.x,
+                        block.position.y * self.workflow.viewport.zoom + self.workflow.viewport.offset.y + canvas_offset.y,
+                    );
+                    // Mini 模式尺寸
+                    let size = egui::Vec2::new(60.0 * self.workflow.viewport.zoom, 40.0 * self.workflow.viewport.zoom);
+                    let rect = egui::Rect::from_min_size(screen_pos, size);
+                    if rect.contains(pointer) {
+                        self.hovered_block = Some(*id);
+                        break;
+                    }
+                }
+            }
 
             // 处理画布拖拽（平移）
             if response.dragged() {
@@ -294,7 +383,6 @@ impl eframe::App for PlayerApp {
                     let old_zoom = self.workflow.viewport.zoom;
                     self.workflow.viewport.zoom = (old_zoom * zoom_factor).clamp(0.1, 3.0);
 
-                    // 以鼠标为中心缩放
                     let mouse_canvas = Vec2::new(
                         pointer.x - canvas_offset.x,
                         pointer.y - canvas_offset.y,
@@ -308,8 +396,8 @@ impl eframe::App for PlayerApp {
             // 绘制网格
             Canvas::draw_grid(&painter, &self.workflow.viewport, canvas_rect);
 
-            // 绘制连线
-            for conn in self.workflow.connections.values() {
+            // 绘制连线（使用 Mini 端口位置）
+            for (conn_id, conn) in &self.workflow.connections {
                 let (from_block, to_block) = match (
                     self.workflow.blocks.get(&conn.from_block),
                     self.workflow.blocks.get(&conn.to_block),
@@ -318,28 +406,26 @@ impl eframe::App for PlayerApp {
                     _ => continue,
                 };
 
-                let (from_def, to_def) = match (
-                    self.registry.get(&from_block.script_id),
-                    self.registry.get(&to_block.script_id),
-                ) {
-                    (Some(f), Some(t)) => (f, t),
-                    _ => continue,
-                };
+                // Mini 模式：使用简化的端口位置
+                let from_pos = BlockWidget::get_mini_port_screen_pos(from_block, true, &self.workflow.viewport, canvas_offset);
+                let to_pos = BlockWidget::get_mini_port_screen_pos(to_block, false, &self.workflow.viewport, canvas_offset);
 
-                let from_idx = from_def.outputs.iter().position(|p| p.id == conn.from_port).unwrap_or(0);
-                let to_idx = to_def.inputs.iter().position(|p| p.id == conn.to_port).unwrap_or(0);
-
-                let from_pos = BlockWidget::get_port_screen_pos(from_block, from_idx, true, &self.workflow.viewport, canvas_offset);
-                let to_pos = BlockWidget::get_port_screen_pos(to_block, to_idx, false, &self.workflow.viewport, canvas_offset);
-
-                let activation = self.workflow.get_connection_activation(conn.from_block);
+                // 使用连线 ID 获取激活状态
+                let activation = self.workflow.get_connection_activation(*conn_id);
                 ConnectionWidget::draw_with_flow(&painter, from_pos, to_pos, false, activation);
             }
 
-            // 绘制 Block
+            // 绘制 Block（使用 Mini 卡片，hover 时展开）
             for block in self.workflow.blocks.values() {
                 if let Some(def) = self.registry.get(&block.script_id) {
-                    BlockWidget::draw(&painter, block, def, &self.workflow.viewport, canvas_offset);
+                    let is_hovered = self.hovered_block == Some(block.id);
+                    if is_hovered {
+                        // Hover 时显示完整卡片
+                        BlockWidget::draw(&painter, block, def, &self.workflow.viewport, canvas_offset);
+                    } else {
+                        // 默认显示 Mini 卡片
+                        BlockWidget::draw_mini(&painter, block, def, &self.workflow.viewport, canvas_offset, None);
+                    }
                 }
             }
         });
