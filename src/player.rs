@@ -7,13 +7,15 @@
 //! 多个 .lpack 时会显示选择界面。
 
 mod script;
+mod ui;
 mod workflow;
 
 use script::{BlockDefinition, ScriptParser, Value};
-use workflow::{GamePackage, Workflow, Vec2};
+use ui::{BlockWidget, Canvas, ConnectionWidget};
+use workflow::{GamePackage, Viewport, Workflow, Vec2};
 
 use anyhow::{anyhow, Result};
-use egui::{CentralPanel, Context, FontData, FontDefinitions, FontFamily};
+use egui::{CentralPanel, Context, FontData, FontDefinitions, FontFamily, Pos2};
 use mlua::{Lua, Table, Value as LuaValue};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -268,26 +270,78 @@ impl eframe::App for PlayerApp {
             });
         });
 
-        // 主内容区 - 显示输出
+        // 主内容区 - 画布
         CentralPanel::default().show(ctx, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                for block in self.workflow.blocks.values() {
-                    if let Some(def) = self.registry.get(&block.script_id) {
-                        let name = block.custom_name.as_ref().unwrap_or(&def.meta.name);
-                        ui.collapsing(name, |ui| {
-                            for output in &def.outputs {
-                                if let Some(value) = block.output_values.get(&output.id) {
-                                    ui.horizontal(|ui| {
-                                        ui.label(&output.name);
-                                        ui.label(":");
-                                        ui.monospace(format!("{:?}", value));
-                                    });
-                                }
-                            }
-                        });
-                    }
+            let (response, painter) = ui.allocate_painter(
+                ui.available_size(),
+                egui::Sense::click_and_drag(),
+            );
+            let canvas_rect = response.rect;
+            let canvas_offset = canvas_rect.min;
+
+            // 处理画布拖拽（平移）
+            if response.dragged() {
+                let delta = response.drag_delta();
+                self.workflow.viewport.offset.x += delta.x;
+                self.workflow.viewport.offset.y += delta.y;
+            }
+
+            // 处理滚轮缩放
+            let scroll_delta = ui.input(|i| i.smooth_scroll_delta.y);
+            if scroll_delta.abs() > 0.1 {
+                if let Some(pointer) = ui.input(|i| i.pointer.hover_pos()) {
+                    let zoom_factor = 1.0 + scroll_delta * 0.002;
+                    let old_zoom = self.workflow.viewport.zoom;
+                    self.workflow.viewport.zoom = (old_zoom * zoom_factor).clamp(0.1, 3.0);
+
+                    // 以鼠标为中心缩放
+                    let mouse_canvas = Vec2::new(
+                        pointer.x - canvas_offset.x,
+                        pointer.y - canvas_offset.y,
+                    );
+                    let zoom_ratio = self.workflow.viewport.zoom / old_zoom;
+                    self.workflow.viewport.offset.x = mouse_canvas.x - (mouse_canvas.x - self.workflow.viewport.offset.x) * zoom_ratio;
+                    self.workflow.viewport.offset.y = mouse_canvas.y - (mouse_canvas.y - self.workflow.viewport.offset.y) * zoom_ratio;
                 }
-            });
+            }
+
+            // 绘制网格
+            Canvas::draw_grid(&painter, &self.workflow.viewport, canvas_rect);
+
+            // 绘制连线
+            for conn in self.workflow.connections.values() {
+                let (from_block, to_block) = match (
+                    self.workflow.blocks.get(&conn.from_block),
+                    self.workflow.blocks.get(&conn.to_block),
+                ) {
+                    (Some(f), Some(t)) => (f, t),
+                    _ => continue,
+                };
+
+                let (from_def, to_def) = match (
+                    self.registry.get(&from_block.script_id),
+                    self.registry.get(&to_block.script_id),
+                ) {
+                    (Some(f), Some(t)) => (f, t),
+                    _ => continue,
+                };
+
+                let from_idx = from_def.outputs.iter().position(|p| p.id == conn.from_port).unwrap_or(0);
+                let to_idx = to_def.inputs.iter().position(|p| p.id == conn.to_port).unwrap_or(0);
+
+                let from_pos = BlockWidget::get_port_screen_pos(from_block, from_idx, true, &self.workflow.viewport, canvas_offset);
+                let to_pos = BlockWidget::get_port_screen_pos(to_block, to_idx, false, &self.workflow.viewport, canvas_offset);
+
+                let activation = self.workflow.get_connection_activation(conn.from_block);
+                ConnectionWidget::draw_with_flow(&painter, from_pos, to_pos, false, activation);
+            }
+
+            // 绘制 Block
+            for block in self.workflow.blocks.values() {
+                if let Some(def) = self.registry.get(&block.script_id) {
+                    BlockWidget::draw(&painter, block, def, &self.workflow.viewport, canvas_offset);
+                }
+            }
         });
 
         ctx.request_repaint();
