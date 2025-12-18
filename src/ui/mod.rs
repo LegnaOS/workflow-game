@@ -7,7 +7,7 @@ mod layer_panel;
 mod menu;
 mod property_panel;
 
-pub use block_widget::BlockWidget;
+pub use block_widget::{BlockWidget, ConnectionIndicator};
 pub use canvas::Canvas;
 pub use connection_widget::{ConnectionMode, ConnectionWidget};
 pub use layer_panel::{LayerEvent, LayerPanel};

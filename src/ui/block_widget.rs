@@ -1,17 +1,27 @@
 //! Block渲染组件
 
 use crate::script::{BlockDefinition, DataType, Value};
-use crate::workflow::{Block, Viewport};
+use crate::workflow::{Block, BlockDisplayMode, Viewport};
 use egui::{Color32, FontId, Painter, Pos2, Rect, Rounding, Stroke, Vec2 as EguiVec2};
 
 /// Block渲染器
 pub struct BlockWidget;
+
+/// 连接指示器信息（用于 Mini 模式显示连接状态）
+pub struct ConnectionIndicator {
+    pub input_count: usize,
+    pub input_connected: usize,
+    pub output_count: usize,
+    pub output_connected: usize,
+}
 
 impl BlockWidget {
     const HEADER_HEIGHT: f32 = 28.0;
     const PORT_HEIGHT: f32 = 22.0;
     const PORT_RADIUS: f32 = 5.0;
     const ROUNDING: f32 = 6.0;
+    const MINI_WIDTH: f32 = 80.0;
+    const MINI_HEIGHT: f32 = 36.0;
 
     /// 绘制Block
     pub fn draw(
@@ -104,6 +114,145 @@ impl BlockWidget {
             let value = block.output_values.get(&output.id);
             Self::draw_port(painter, port_pos, &output.name, value, &output.data_type, false, viewport.zoom);
         }
+    }
+
+    /// 绘制 Mini 模式的 Block
+    pub fn draw_mini(
+        painter: &Painter,
+        block: &Block,
+        definition: &BlockDefinition,
+        viewport: &Viewport,
+        canvas_offset: Pos2,
+        indicators: Option<&ConnectionIndicator>,
+    ) {
+        let pos = Self::block_screen_pos(block, viewport, canvas_offset);
+        let size = EguiVec2::new(Self::MINI_WIDTH * viewport.zoom, Self::MINI_HEIGHT * viewport.zoom);
+        let rect = Rect::from_min_size(pos, size);
+
+        // 解析颜色
+        let header_color = Self::parse_color(&definition.meta.color);
+        let border_color = if block.selected {
+            Color32::from_rgb(255, 100, 100)
+        } else {
+            Color32::from_gray(70)
+        };
+        let border_width = if block.selected { 2.5 } else { 1.0 };
+
+        // 绘制阴影
+        if viewport.zoom > 0.5 {
+            let shadow_offset = 2.0 * viewport.zoom;
+            let shadow_rect = Rect::from_min_size(
+                Pos2::new(pos.x + shadow_offset, pos.y + shadow_offset),
+                size,
+            );
+            painter.rect_filled(
+                shadow_rect,
+                Rounding::same(Self::ROUNDING * viewport.zoom),
+                Color32::from_black_alpha(30),
+            );
+        }
+
+        // 绘制主体（使用 header 颜色作为背景）
+        painter.rect_filled(rect, Rounding::same(Self::ROUNDING * viewport.zoom), header_color);
+
+        // 绘制边框
+        painter.rect_stroke(
+            rect,
+            Rounding::same(Self::ROUNDING * viewport.zoom),
+            Stroke::new(border_width, border_color),
+        );
+
+        // 绘制标题（居中）
+        let display_name = block.display_name(definition);
+        // 截断名称
+        let short_name = if display_name.chars().count() > 6 {
+            format!("{}...", display_name.chars().take(5).collect::<String>())
+        } else {
+            display_name.to_string()
+        };
+        painter.text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            short_name,
+            FontId::proportional(11.0 * viewport.zoom),
+            Color32::WHITE,
+        );
+
+        // 绘制连接指示器（左右两侧的小圆点）
+        if let Some(ind) = indicators {
+            let dot_radius = 3.0 * viewport.zoom;
+            let dot_spacing = 8.0 * viewport.zoom;
+
+            // 左侧输入指示器
+            let input_start_y = rect.center().y - (ind.input_count as f32 - 1.0) * dot_spacing / 2.0;
+            for i in 0..ind.input_count {
+                let y = input_start_y + i as f32 * dot_spacing;
+                let x = pos.x - dot_radius - 2.0 * viewport.zoom;
+                let connected = i < ind.input_connected;
+                let color = if connected {
+                    Color32::from_rgb(100, 200, 100)  // 实心绿
+                } else {
+                    Color32::from_gray(80)  // 空心灰
+                };
+                if connected {
+                    painter.circle_filled(Pos2::new(x, y), dot_radius, color);
+                } else {
+                    painter.circle_stroke(Pos2::new(x, y), dot_radius, Stroke::new(1.0, color));
+                }
+            }
+
+            // 右侧输出指示器
+            let output_start_y = rect.center().y - (ind.output_count as f32 - 1.0) * dot_spacing / 2.0;
+            for i in 0..ind.output_count {
+                let y = output_start_y + i as f32 * dot_spacing;
+                let x = pos.x + size.x + dot_radius + 2.0 * viewport.zoom;
+                let connected = i < ind.output_connected;
+                let color = if connected {
+                    Color32::from_rgb(100, 150, 255)  // 实心蓝
+                } else {
+                    Color32::from_gray(80)
+                };
+                if connected {
+                    painter.circle_filled(Pos2::new(x, y), dot_radius, color);
+                } else {
+                    painter.circle_stroke(Pos2::new(x, y), dot_radius, Stroke::new(1.0, color));
+                }
+            }
+        }
+    }
+
+    /// 根据显示模式绘制 Block
+    pub fn draw_with_mode(
+        painter: &Painter,
+        block: &Block,
+        definition: &BlockDefinition,
+        viewport: &Viewport,
+        canvas_offset: Pos2,
+        mode: BlockDisplayMode,
+        indicators: Option<&ConnectionIndicator>,
+    ) {
+        match mode {
+            BlockDisplayMode::Mini => Self::draw_mini(painter, block, definition, viewport, canvas_offset, indicators),
+            BlockDisplayMode::Full => Self::draw(painter, block, definition, viewport, canvas_offset),
+            BlockDisplayMode::Hidden => {} // 不绘制
+        }
+    }
+
+    /// 获取 Mini 模式端口的屏幕位置（用于连线）
+    pub fn get_mini_port_screen_pos(
+        block: &Block,
+        is_output: bool,
+        viewport: &Viewport,
+        canvas_offset: Pos2,
+    ) -> Pos2 {
+        let block_pos = Self::block_screen_pos(block, viewport, canvas_offset);
+        let y = block_pos.y + Self::MINI_HEIGHT * viewport.zoom / 2.0;
+        let x = if is_output {
+            block_pos.x + Self::MINI_WIDTH * viewport.zoom
+        } else {
+            block_pos.x
+        };
+        Pos2::new(x, y)
     }
 
     /// 绘制端口

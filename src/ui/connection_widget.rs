@@ -71,6 +71,47 @@ impl ConnectionWidget {
         Self::draw_line(painter, from, to, base_color, width, flow_phase);
     }
 
+    /// 绘制合并连线（预览模式下多条连线合并为一条粗线）
+    pub fn draw_merged(painter: &Painter, from: Pos2, to: Pos2, count: usize, selected: bool, activation: f32) {
+        // 根据连线数量调整粗细和颜色
+        let base_width = 2.5 + (count as f32 - 1.0).min(3.0) * 0.8;
+        let width = if selected { base_width + 1.0 } else { base_width };
+
+        let base_color = if selected {
+            Color32::from_rgb(255, 100, 100)
+        } else if activation > 0.01 {
+            let glow = (activation * 255.0) as u8;
+            Color32::from_rgb(50 + glow / 2, 180, 100 + glow / 2)
+        } else {
+            // 根据数量微调颜色
+            let intensity = (100 + count as u8 * 15).min(180);
+            Color32::from_rgb(intensity, 160, 230)
+        };
+
+        let flow_phase = if activation > 0.01 { activation } else { 0.0 };
+        Self::draw_line(painter, from, to, base_color, width, flow_phase);
+
+        // 在连线中间显示数量标签（如果超过1条）
+        if count > 1 {
+            let mid = Pos2::new((from.x + to.x) / 2.0, (from.y + to.y) / 2.0);
+            let label = format!("×{}", count);
+
+            // 绘制标签背景
+            let label_size = egui::Vec2::new(20.0, 14.0);
+            let label_rect = egui::Rect::from_center_size(mid, label_size);
+            painter.rect_filled(label_rect, egui::Rounding::same(3.0), Color32::from_rgba_unmultiplied(40, 40, 50, 200));
+
+            // 绘制标签文字
+            painter.text(
+                mid,
+                egui::Align2::CENTER_CENTER,
+                label,
+                egui::FontId::proportional(10.0),
+                Color32::from_gray(220),
+            );
+        }
+    }
+
     /// 绘制连线（根据模式）- 优化版
     fn draw_line(painter: &Painter, from: Pos2, to: Pos2, color: Color32, width: f32, flow_phase: f32) {
         let mode = Self::mode();

@@ -5,6 +5,18 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use uuid::Uuid;
 
+/// Block 显示模式
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BlockDisplayMode {
+    /// Mini 模式：只显示名称和图标，不显示端口
+    Mini,
+    /// Full 模式：显示完整端口列表
+    #[default]
+    Full,
+    /// Hidden 模式：完全隐藏（预览模式下的子块）
+    Hidden,
+}
+
 /// 2D向量
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 pub struct Vec2 {
@@ -222,6 +234,29 @@ impl Block {
     pub fn snap_to_grid(&mut self, grid_size: f32) {
         self.position.x = (self.position.x / grid_size).round() * grid_size;
         self.position.y = (self.position.y / grid_size).round() * grid_size;
+    }
+
+    /// Mini 模式的尺寸
+    pub fn mini_size() -> Vec2 {
+        Vec2::new(80.0, 36.0)
+    }
+
+    /// 获取当前显示尺寸（根据显示模式）
+    pub fn display_size(&self, mode: BlockDisplayMode) -> Vec2 {
+        match mode {
+            BlockDisplayMode::Mini => Self::mini_size(),
+            BlockDisplayMode::Full => self.size,
+            BlockDisplayMode::Hidden => Vec2::new(0.0, 0.0),
+        }
+    }
+
+    /// 检查点是否在Block内（考虑显示模式）
+    pub fn contains_with_mode(&self, point: Vec2, mode: BlockDisplayMode) -> bool {
+        let size = self.display_size(mode);
+        point.x >= self.position.x
+            && point.x <= self.position.x + size.x
+            && point.y >= self.position.y
+            && point.y <= self.position.y + size.y
     }
 }
 

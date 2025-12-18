@@ -1,8 +1,8 @@
 //! 应用状态
 
 use crate::script::{ScriptRegistry, ScriptWatcher};
-use crate::ui::{BlockWidget, Canvas, ConnectionMode, ConnectionWidget, LayerEvent, LayerPanel, MenuEvent, PropertyPanel, SideMenu};
-use crate::workflow::{Block, BlueprintStorage, Clipboard, Connection, Vec2, Workflow, WorkflowExecutor};
+use crate::ui::{BlockWidget, Canvas, ConnectionIndicator, ConnectionMode, ConnectionWidget, LayerEvent, LayerPanel, MenuEvent, PropertyPanel, SideMenu};
+use crate::workflow::{Block, BlockDisplayMode, BlueprintStorage, Clipboard, Connection, Vec2, Workflow, WorkflowExecutor};
 use anyhow::Result;
 use egui::{CentralPanel, Context, Key, Pos2, SidePanel};
 use std::collections::HashSet;
@@ -80,6 +80,12 @@ pub struct WorkflowApp {
     last_snapshot_time: std::time::Instant,
     // 图层编辑状态
     editing_layer: Option<(usize, String)>,
+    // 编辑器模式
+    editor_mode: EditorMode,
+    // Hover 状态
+    hovered_block_id: Option<Uuid>,
+    // 连线时目标块（用于展开显示）
+    connection_target_block: Option<Uuid>,
 }
 
 /// 右键菜单目标
@@ -89,6 +95,16 @@ enum ContextMenuTarget {
     Canvas,
     Block(Uuid),
     Connection(Uuid),
+}
+
+/// 编辑器模式
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum EditorMode {
+    /// 预览模式：Mini块、合并连线、子块隐藏
+    Preview,
+    /// 蓝图编辑模式：完整显示（现有样式）
+    #[default]
+    Blueprint,
 }
 
 #[derive(Clone)]
@@ -155,6 +171,9 @@ impl WorkflowApp {
             redo_stack: Vec::new(),
             last_snapshot_time: std::time::Instant::now(),
             editing_layer: None,
+            editor_mode: EditorMode::Blueprint,
+            hovered_block_id: None,
+            connection_target_block: None,
         })
     }
 
@@ -562,9 +581,24 @@ impl eframe::App for WorkflowApp {
 
                 ui.separator();
 
-                // 连线模式切换
-                let mode_text = if self.use_bezier_mode { "〰️ 曲线" } else { "⌐ 折线" };
+                // 编辑器模式切换
+                let mode_text = match self.editor_mode {
+                    EditorMode::Preview => "👁 预览",
+                    EditorMode::Blueprint => "🔧 编辑",
+                };
                 if ui.button(mode_text).clicked() {
+                    self.editor_mode = match self.editor_mode {
+                        EditorMode::Preview => EditorMode::Blueprint,
+                        EditorMode::Blueprint => EditorMode::Preview,
+                    };
+                    self.add_log("INFO", format!("切换到{}模式",
+                        if self.editor_mode == EditorMode::Preview { "预览" } else { "蓝图编辑" }
+                    ));
+                }
+
+                // 连线模式切换
+                let line_mode_text = if self.use_bezier_mode { "〰️ 曲线" } else { "⌐ 折线" };
+                if ui.button(line_mode_text).clicked() {
                     self.use_bezier_mode = !self.use_bezier_mode;
                 }
 
@@ -754,58 +788,118 @@ impl eframe::App for WorkflowApp {
 
             // 绘制连接（视口裁剪优化）
             let viewport_rect = response.rect;
-            for (conn_id, conn) in &self.workflow.connections {
-                if let (Some(from_block), Some(to_block)) = (
-                    self.workflow.blocks.get(&conn.from_block),
-                    self.workflow.blocks.get(&conn.to_block),
-                ) {
-                    let from_def = match self.registry.get(&from_block.script_id) {
-                        Some(d) => d,
-                        None => {
-                            log::warn!("找不到脚本定义: {}", from_block.script_id);
-                            continue;
-                        }
-                    };
-                    let to_def = match self.registry.get(&to_block.script_id) {
-                        Some(d) => d,
-                        None => {
-                            log::warn!("找不到脚本定义: {}", to_block.script_id);
-                            continue;
-                        }
-                    };
 
-                    let from_idx_opt = from_def.outputs.iter()
-                        .position(|p| p.id == conn.from_port);
-                    let to_idx_opt = to_def.inputs.iter()
-                        .position(|p| p.id == conn.to_port);
+            // 在预览模式下，合并同一对 Block 之间的连线
+            if self.editor_mode == EditorMode::Preview {
+                // 收集需要合并的连线（两端都是 Mini 模式）
+                let mut merged_pairs: std::collections::HashSet<(Uuid, Uuid)> = std::collections::HashSet::new();
+                let mut drawn_merged: std::collections::HashSet<(Uuid, Uuid)> = std::collections::HashSet::new();
 
-                    // 如果端口找不到，跳过这条连线（无效连接）
-                    let (from_idx, to_idx) = match (from_idx_opt, to_idx_opt) {
-                        (Some(f), Some(t)) => (f, t),
-                        _ => {
-                            log::warn!("无效连接: {}:{} -> {}:{}",
-                                from_block.script_id, conn.from_port,
-                                to_block.script_id, conn.to_port);
-                            continue;
-                        }
-                    };
-
-                    let from_pos = BlockWidget::get_port_screen_pos(
-                        from_block, from_idx, true, &self.workflow.viewport, canvas_offset
-                    );
-                    let to_pos = BlockWidget::get_port_screen_pos(
-                        to_block, to_idx, false, &self.workflow.viewport, canvas_offset
-                    );
-
-                    // 视口裁剪：检查连线是否在可见区域
-                    let conn_rect = egui::Rect::from_two_pos(from_pos, to_pos).expand(50.0);
-                    if !conn_rect.intersects(viewport_rect) {
-                        continue;
+                for conn in self.workflow.connections.values() {
+                    let from_mode = self.get_block_display_mode(conn.from_block);
+                    let to_mode = self.get_block_display_mode(conn.to_block);
+                    if from_mode == BlockDisplayMode::Mini && to_mode == BlockDisplayMode::Mini {
+                        merged_pairs.insert((conn.from_block, conn.to_block));
                     }
+                }
 
-                    let is_selected = self.selected_connections.contains(conn_id);
-                    let activation = self.workflow.get_connection_activation(*conn_id);
-                    ConnectionWidget::draw_with_flow(&painter, from_pos, to_pos, is_selected, activation);
+                for (conn_id, conn) in &self.workflow.connections {
+                    if let (Some(from_block), Some(to_block)) = (
+                        self.workflow.blocks.get(&conn.from_block),
+                        self.workflow.blocks.get(&conn.to_block),
+                    ) {
+                        let from_mode = self.get_block_display_mode(conn.from_block);
+                        let to_mode = self.get_block_display_mode(conn.to_block);
+
+                        // 如果两端都是 Mini 且已经绘制过合并连线，跳过
+                        if from_mode == BlockDisplayMode::Mini && to_mode == BlockDisplayMode::Mini {
+                            let pair = (conn.from_block, conn.to_block);
+                            if drawn_merged.contains(&pair) {
+                                continue;
+                            }
+                            drawn_merged.insert(pair);
+
+                            // 绘制合并连线
+                            let from_pos = BlockWidget::get_mini_port_screen_pos(from_block, true, &self.workflow.viewport, canvas_offset);
+                            let to_pos = BlockWidget::get_mini_port_screen_pos(to_block, false, &self.workflow.viewport, canvas_offset);
+
+                            let conn_rect = egui::Rect::from_two_pos(from_pos, to_pos).expand(50.0);
+                            if conn_rect.intersects(viewport_rect) {
+                                // 计算该对之间的连线数量用于显示
+                                let conn_count = self.workflow.connections.values()
+                                    .filter(|c| c.from_block == conn.from_block && c.to_block == conn.to_block)
+                                    .count();
+                                let is_selected = self.selected_connections.contains(conn_id);
+                                // 使用最大激活值
+                                let activation = self.workflow.connections.iter()
+                                    .filter(|(_, c)| c.from_block == conn.from_block && c.to_block == conn.to_block)
+                                    .map(|(id, _)| self.workflow.get_connection_activation(*id))
+                                    .fold(0.0f32, |a, b| a.max(b));
+                                ConnectionWidget::draw_merged(&painter, from_pos, to_pos, conn_count, is_selected, activation);
+                            }
+                        } else {
+                            // 正常绘制（至少一端是 Full 模式）
+                            let from_def = match self.registry.get(&from_block.script_id) {
+                                Some(d) => d,
+                                None => continue,
+                            };
+                            let to_def = match self.registry.get(&to_block.script_id) {
+                                Some(d) => d,
+                                None => continue,
+                            };
+
+                            let from_idx = from_def.outputs.iter().position(|p| p.id == conn.from_port).unwrap_or(0);
+                            let to_idx = to_def.inputs.iter().position(|p| p.id == conn.to_port).unwrap_or(0);
+
+                            let from_pos = if from_mode == BlockDisplayMode::Mini {
+                                BlockWidget::get_mini_port_screen_pos(from_block, true, &self.workflow.viewport, canvas_offset)
+                            } else {
+                                BlockWidget::get_port_screen_pos(from_block, from_idx, true, &self.workflow.viewport, canvas_offset)
+                            };
+                            let to_pos = if to_mode == BlockDisplayMode::Mini {
+                                BlockWidget::get_mini_port_screen_pos(to_block, false, &self.workflow.viewport, canvas_offset)
+                            } else {
+                                BlockWidget::get_port_screen_pos(to_block, to_idx, false, &self.workflow.viewport, canvas_offset)
+                            };
+
+                            let conn_rect = egui::Rect::from_two_pos(from_pos, to_pos).expand(50.0);
+                            if conn_rect.intersects(viewport_rect) {
+                                let is_selected = self.selected_connections.contains(conn_id);
+                                let activation = self.workflow.get_connection_activation(*conn_id);
+                                ConnectionWidget::draw_with_flow(&painter, from_pos, to_pos, is_selected, activation);
+                            }
+                        }
+                    }
+                }
+            } else {
+                // 蓝图模式：正常绘制所有连线
+                for (conn_id, conn) in &self.workflow.connections {
+                    if let (Some(from_block), Some(to_block)) = (
+                        self.workflow.blocks.get(&conn.from_block),
+                        self.workflow.blocks.get(&conn.to_block),
+                    ) {
+                        let from_def = match self.registry.get(&from_block.script_id) {
+                            Some(d) => d,
+                            None => continue,
+                        };
+                        let to_def = match self.registry.get(&to_block.script_id) {
+                            Some(d) => d,
+                            None => continue,
+                        };
+
+                        let from_idx = from_def.outputs.iter().position(|p| p.id == conn.from_port).unwrap_or(0);
+                        let to_idx = to_def.inputs.iter().position(|p| p.id == conn.to_port).unwrap_or(0);
+
+                        let from_pos = BlockWidget::get_port_screen_pos(from_block, from_idx, true, &self.workflow.viewport, canvas_offset);
+                        let to_pos = BlockWidget::get_port_screen_pos(to_block, to_idx, false, &self.workflow.viewport, canvas_offset);
+
+                        let conn_rect = egui::Rect::from_two_pos(from_pos, to_pos).expand(50.0);
+                        if conn_rect.intersects(viewport_rect) {
+                            let is_selected = self.selected_connections.contains(conn_id);
+                            let activation = self.workflow.get_connection_activation(*conn_id);
+                            ConnectionWidget::draw_with_flow(&painter, from_pos, to_pos, is_selected, activation);
+                        }
+                    }
                 }
             }
 
@@ -813,20 +907,38 @@ impl eframe::App for WorkflowApp {
             for block in self.workflow.blocks.values() {
                 // 计算Block屏幕位置（包含动画偏移）
                 let render_pos = block.render_position();
+
+                // 根据编辑器模式确定显示模式
+                let display_mode = self.get_block_display_mode(block.id);
+                if display_mode == BlockDisplayMode::Hidden {
+                    continue;
+                }
+
+                let block_size = block.display_size(display_mode);
                 let screen_pos = Pos2::new(
                     render_pos.x * self.workflow.viewport.zoom + self.workflow.viewport.offset.x + canvas_offset.x,
                     render_pos.y * self.workflow.viewport.zoom + self.workflow.viewport.offset.y + canvas_offset.y,
                 );
                 let screen_size = egui::Vec2::new(
-                    block.size.x * self.workflow.viewport.zoom,
-                    block.size.y * self.workflow.viewport.zoom,
+                    block_size.x * self.workflow.viewport.zoom,
+                    block_size.y * self.workflow.viewport.zoom,
                 );
                 let block_rect = egui::Rect::from_min_size(screen_pos, screen_size);
 
                 // 只渲染可见区域内的Block
                 if block_rect.intersects(viewport_rect) {
                     if let Some(def) = self.registry.get(&block.script_id) {
-                        BlockWidget::draw(&painter, block, def, &self.workflow.viewport, canvas_offset);
+                        match display_mode {
+                            BlockDisplayMode::Mini => {
+                                // 计算连接指示器
+                                let indicators = self.calculate_connection_indicators(block.id, def);
+                                BlockWidget::draw_mini(&painter, block, def, &self.workflow.viewport, canvas_offset, Some(&indicators));
+                            }
+                            BlockDisplayMode::Full => {
+                                BlockWidget::draw(&painter, block, def, &self.workflow.viewport, canvas_offset);
+                            }
+                            BlockDisplayMode::Hidden => {}
+                        }
                     }
                 }
             }
@@ -1087,6 +1199,22 @@ impl WorkflowApp {
     fn handle_canvas_interaction(&mut self, response: &egui::Response, canvas_offset: Pos2) {
         let pointer_pos = response.hover_pos().unwrap_or(Pos2::ZERO);
         let canvas_pos = Canvas::pos2_to_vec2(pointer_pos, &self.workflow.viewport, canvas_offset);
+
+        // 更新 hovered block（用于预览模式展开）
+        if response.hovered() {
+            let mut hovered = None;
+            for (id, block) in &self.workflow.blocks {
+                // 在预览模式下，使用 Mini 尺寸检测；在蓝图模式下使用 Full 尺寸
+                let display_mode = self.get_block_display_mode(*id);
+                if block.contains_with_mode(canvas_pos, display_mode) {
+                    hovered = Some(*id);
+                    break;
+                }
+            }
+            self.hovered_block_id = hovered;
+        } else {
+            self.hovered_block_id = None;
+        }
 
         // 检测空格键状态
         response.ctx.input(|i| {
@@ -1399,9 +1527,33 @@ impl WorkflowApp {
             }
         }
 
-        // 拖拽连接 - 更新鼠标位置
-        if let InteractionState::DraggingConnection { ref mut mouse_pos, .. } = self.state {
+        // 拖拽连接 - 更新鼠标位置和目标块
+        if let InteractionState::DraggingConnection { ref mut mouse_pos, ref from } = self.state {
             *mouse_pos = pointer_pos;
+
+            // 在预览模式下，找到鼠标悬停的目标块并展开
+            if self.editor_mode == EditorMode::Preview {
+                let from_block_id = from.block_id;
+                // 检查是否悬停在其他块上（作为连接目标）
+                let mut target = None;
+                for (id, block) in &self.workflow.blocks {
+                    if *id != from_block_id {
+                        let display_mode = if Some(*id) == self.connection_target_block {
+                            BlockDisplayMode::Full
+                        } else {
+                            BlockDisplayMode::Mini
+                        };
+                        if block.contains_with_mode(canvas_pos, display_mode) {
+                            target = Some(*id);
+                            break;
+                        }
+                    }
+                }
+                self.connection_target_block = target;
+            }
+        } else {
+            // 不在连接拖拽状态时清除目标块
+            self.connection_target_block = None;
         }
 
         // 框选拖拽 - 更新结束位置
@@ -1908,6 +2060,72 @@ impl WorkflowApp {
                         }
                     }
                 });
+        }
+    }
+}
+
+impl WorkflowApp {
+    /// 获取Block的显示模式
+    fn get_block_display_mode(&self, block_id: Uuid) -> BlockDisplayMode {
+        match self.editor_mode {
+            EditorMode::Blueprint => BlockDisplayMode::Full,
+            EditorMode::Preview => {
+                // 在预览模式下：
+                // - Hover 的块展开为 Full
+                // - 被选中的块展开为 Full
+                // - 连接拖拽源块展开为 Full
+                // - 连接拖拽目标块展开为 Full
+                // - 其他显示为 Mini
+
+                // 检查是否为连接拖拽源块
+                let is_dragging_source = if let InteractionState::DraggingConnection { ref from, .. } = self.state {
+                    from.block_id == block_id
+                } else {
+                    false
+                };
+
+                if Some(block_id) == self.hovered_block_id {
+                    BlockDisplayMode::Full
+                } else if Some(block_id) == self.connection_target_block {
+                    BlockDisplayMode::Full
+                } else if is_dragging_source {
+                    BlockDisplayMode::Full
+                } else if self.workflow.blocks.get(&block_id).map(|b| b.selected).unwrap_or(false) {
+                    BlockDisplayMode::Full
+                } else {
+                    BlockDisplayMode::Mini
+                }
+            }
+        }
+    }
+
+    /// 计算Block的连接指示器信息
+    fn calculate_connection_indicators(&self, block_id: Uuid, definition: &crate::script::BlockDefinition) -> ConnectionIndicator {
+        let input_count = definition.inputs.len();
+        let output_count = definition.outputs.len();
+
+        // 计算已连接的输入端口数
+        let mut input_connected = 0;
+        let mut output_connected = 0;
+
+        for conn in self.workflow.connections.values() {
+            if conn.to_block == block_id {
+                input_connected += 1;
+            }
+            if conn.from_block == block_id {
+                output_connected += 1;
+            }
+        }
+
+        // 限制不超过端口数
+        input_connected = input_connected.min(input_count);
+        output_connected = output_connected.min(output_count);
+
+        ConnectionIndicator {
+            input_count,
+            input_connected,
+            output_count,
+            output_connected,
         }
     }
 }
