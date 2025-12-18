@@ -1,54 +1,73 @@
 # WorkflowEngine
 
-A visual node-based game logic editor. Connect blocks instead of writing code, extend with Lua scripts.
+Visual node-based game logic editor + standalone player. Connect blocks instead of writing code, extend with Lua scripts.
 
 ## What is this
 
-A tool for building game logic by dragging nodes and connecting ports.
+A tool for building game logic by dragging nodes and connecting ports, plus a standalone player for distributing games.
 
 Core idea: break down game logic into Blocks (nodes), each Block is a Lua script, Blocks pass data through connections. Use it for:
 
 - Turn-based battle systems
+- Idle/clicker games
 - Skill/Buff calculations
 - State machines
 - Any logic that can be represented as data flow
+
+## Screenshot
+
 <img width="1403" height="863" alt="image" src="https://github.com/user-attachments/assets/7201603f-72a7-4035-b66b-c1bc7106df32" />
 
 https://github.com/user-attachments/assets/08793b5b-d584-44a1-b641-9e8912ce3061
 
+## Download
+
+Get from [Releases](https://github.com/LegnaOS/workflow-game/releases):
+
+| File | Description |
+|------|-------------|
+| `WorkflowIDE-macos.zip` | macOS IDE with preset scripts |
+| `workflow_player` | Standalone player |
+| `scripts.zip` | Preset script library |
+
 ## Quick Start
 
-```bash
-# Clone
-git clone https://github.com/LegnaOS/workflow-game.git
-cd workflow-game
+### Using IDE
 
-# Build and run
-cargo run --release
+1. Download and extract `WorkflowIDE-macos.zip`
+2. Run `workflow_editor`
+3. Double-click blocks in left panel to add
+4. Drag ports to create connections
+5. Edit properties in right panel
+6. `Ctrl+S` save, `Ctrl+O` open
 
-# Or download from Releases
-```
+### Publish Game
 
-After launching:
-1. Left panel shows Block list, double-click to add to canvas
-2. Drag ports to create connections
-3. Right panel for editing Block properties
-4. Ctrl+S to save, Ctrl+O to open
+1. Design your workflow in IDE
+2. Click "📦 Publish" in toolbar
+3. Enter game name and choose directory
+4. Auto-generates:
+   - `GameName_publish/` folder
+   - `workflow_player` player
+   - `GameName.lpack` encrypted game package
+
+### Run Game
+
+1. Put `workflow_player` and `.lpack` in same directory
+2. Double-click `workflow_player`
+3. Shows selection UI when multiple games present
 
 ## File Formats
 
-| Extension | Description |
-|-----------|-------------|
-| `.L` | Plain JSON, editable |
-| `.LZ` | Encrypted, requires password |
-| `.dist.L` | Distribution, read-only |
-| `.dist.LZ` | Encrypted distribution |
+| Extension | Description | Use Case |
+|-----------|-------------|----------|
+| `.L` | Plain JSON | Development |
+| `.LZ` | AES encrypted | Source protection |
+| `.lpack` | Encrypted package | Standalone distribution |
 
 ## Custom Blocks
 
-Blocks are Lua scripts. Drop them in `scripts/` directory, auto-loaded with hot reload.
-
-Minimal example:
+Blocks are Lua scripts. Drop in `scripts/` directory, auto-loaded with hot reload.
 
 ```lua
 return {
@@ -72,16 +91,23 @@ return {
 
 See [docs/BLOCK_DEVELOPMENT_EN.md](docs/BLOCK_DEVELOPMENT_EN.md) for details.
 
-## Built-in Blocks
+## Built-in Scripts
 
 ```
 scripts/
-├── game/          # Game
-│   ├── character  # Character (stats, state)
+├── lite/          # Lite RPG Idle Game
+│   ├── hero       # Hero
+│   ├── boss       # Boss
+│   ├── weapon     # Weapon
+│   ├── armor      # Armor
+│   ├── skill      # Skill
+│   └── gem_*      # Gems (attack/crit/dodge)
+├── game/          # Game Core
+│   ├── character  # Character
 │   ├── monster    # Monster
 │   ├── attack     # Attack calculation
-│   └── fireball   # Fireball skill
-├── logic/         # Logic
+│   └── ...
+├── logic/         # Logic Control
 │   ├── branch     # Conditional branch
 │   ├── compare    # Comparison
 │   └── selector   # Selector
@@ -89,6 +115,10 @@ scripts/
 │   ├── add        # Addition
 │   ├── multiply   # Multiplication
 │   └── calc       # Expression
+├── input/         # Interactive Input
+│   ├── text_input # Text box
+│   ├── password   # Password box
+│   └── button     # Button
 └── util/          # Utility
     ├── splitter   # Splitter
     ├── merger     # Merger
@@ -103,42 +133,43 @@ Requires Rust 1.70+
 # Development
 cargo run
 
-# Release
-./build.sh all
+# Build IDE and Player
+cargo build --release
 
-# Single platform
-./build.sh mac
-./build.sh mac-intel
-./build.sh windows
+# Output
+target/release/workflow_engine  # IDE
+target/release/workflow_player  # Player
 ```
-
-Output in `dist/` directory.
 
 ## Project Structure
 
 ```
 src/
-├── main.rs           # Entry, font loading
+├── main.rs           # IDE entry
+├── player.rs         # Player entry
 ├── app.rs            # Main app logic
 ├── script/           # Lua engine
-│   ├── loader.rs     # Encoding (UTF-8/GBK)
+│   ├── parser.rs     # Script parsing
 │   ├── registry.rs   # Block registry
-│   └── executor.rs   # Executor
+│   └── loader.rs     # Encoding handling
 ├── workflow/         # Core workflow
 │   ├── graph.rs      # Graph structure
 │   ├── block.rs      # Block definition
 │   ├── connection.rs # Connections
+│   ├── package.rs    # Game package format
 │   └── storage.rs    # File storage
 └── ui/               # UI components
     ├── canvas.rs     # Canvas
-    └── block_widget.rs
+    ├── block_widget.rs
+    └── connection_widget.rs
 ```
 
 ## Tech Stack
 
-- **Rust** - Core
-- **egui/eframe** - GUI
+- **Rust** - Core language
+- **egui/eframe** - Immediate mode GUI
 - **mlua** - Lua 5.4 bindings
+- **aes/cbc** - AES-128-CBC encryption
 - **serde** - Serialization
 
 ## License
