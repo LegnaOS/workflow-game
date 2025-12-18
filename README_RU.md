@@ -26,16 +26,22 @@ https://github.com/user-attachments/assets/08793b5b-d584-44a1-b641-9e8912ce3061
 
 | Файл | Описание |
 |------|----------|
-| `WorkflowIDE-macos.zip` | macOS IDE с предустановленными скриптами |
-| `workflow_player` | Автономный плеер |
-| `scripts.zip` | Библиотека скриптов |
+| `workflow_engine-*-macos-arm64.tar.gz` | macOS Apple Silicon |
+| `workflow_engine-*-macos-x64.tar.gz` | macOS Intel |
+| `workflow_engine-*-windows-x64.zip` | Windows 64-bit |
+
+Каждый архив содержит:
+- `workflow_engine` - IDE редактор
+- `workflow_player` - Автономный плеер
+- `scripts/` - Предустановленные скрипты
+- `workflows/` - Примеры рабочих процессов
 
 ## Быстрый старт
 
 ### Использование IDE
 
-1. Скачайте и распакуйте `WorkflowIDE-macos.zip`
-2. Запустите `workflow_editor`
+1. Скачайте и распакуйте архив для вашей платформы
+2. Запустите `workflow_engine`
 3. Двойной клик по блоку для добавления на холст
 4. Перетаскивайте порты для создания соединений
 5. Редактируйте свойства в правой панели

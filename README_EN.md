@@ -26,16 +26,22 @@ Get from [Releases](https://github.com/LegnaOS/workflow-game/releases):
 
 | File | Description |
 |------|-------------|
-| `WorkflowIDE-macos.zip` | macOS IDE with preset scripts |
-| `workflow_player` | Standalone player |
-| `scripts.zip` | Preset script library |
+| `workflow_engine-*-macos-arm64.tar.gz` | macOS Apple Silicon |
+| `workflow_engine-*-macos-x64.tar.gz` | macOS Intel |
+| `workflow_engine-*-windows-x64.zip` | Windows 64-bit |
+
+Each package contains:
+- `workflow_engine` - IDE editor
+- `workflow_player` - Standalone player
+- `scripts/` - Preset scripts
+- `workflows/` - Example workflows
 
 ## Quick Start
 
 ### Using IDE
 
-1. Download and extract `WorkflowIDE-macos.zip`
-2. Run `workflow_editor`
+1. Download and extract package for your platform
+2. Run `workflow_engine`
 3. Double-click blocks in left panel to add
 4. Drag ports to create connections
 5. Edit properties in right panel

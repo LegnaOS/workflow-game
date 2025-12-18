@@ -28,16 +28,22 @@ https://github.com/user-attachments/assets/08793b5b-d584-44a1-b641-9e8912ce3061
 
 | 文件 | 说明 |
 |------|------|
-| `WorkflowIDE-macos.zip` | macOS 完整 IDE（含预设脚本） |
-| `workflow_player` | 独立播放器（运行发布的游戏） |
-| `scripts.zip` | 预设脚本库 |
+| `workflow_engine-*-macos-arm64.tar.gz` | macOS Apple Silicon 版 |
+| `workflow_engine-*-macos-x64.tar.gz` | macOS Intel 版 |
+| `workflow_engine-*-windows-x64.zip` | Windows 64位版 |
+
+每个压缩包包含：
+- `workflow_engine` - IDE 编辑器
+- `workflow_player` - 独立播放器
+- `scripts/` - 预设脚本库
+- `workflows/` - 示例工作流
 
 ## 快速开始
 
 ### 使用 IDE
 
-1. 下载解压 `WorkflowIDE-macos.zip`
-2. 运行 `workflow_editor`
+1. 下载并解压对应平台的压缩包
+2. 运行 `workflow_engine`
 3. 左侧双击 Block 添加到画布
 4. 拖动端口创建连线
 5. 右侧面板编辑属性
