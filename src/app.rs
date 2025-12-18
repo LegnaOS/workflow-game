@@ -811,6 +811,11 @@ impl eframe::App for WorkflowApp {
                         let from_mode = self.get_block_display_mode(conn.from_block);
                         let to_mode = self.get_block_display_mode(conn.to_block);
 
+                        // 如果任一端是 Hidden 模式，不绘制连线
+                        if from_mode == BlockDisplayMode::Hidden || to_mode == BlockDisplayMode::Hidden {
+                            continue;
+                        }
+
                         // 如果两端都是 Mini 且已经绘制过合并连线，跳过
                         if from_mode == BlockDisplayMode::Mini && to_mode == BlockDisplayMode::Mini {
                             let pair = (conn.from_block, conn.to_block);
@@ -2065,6 +2070,13 @@ impl WorkflowApp {
 }
 
 impl WorkflowApp {
+    /// 检查块是否连接到指定的块
+    fn is_connected_to(&self, block_id: Uuid, target_id: Uuid) -> bool {
+        self.workflow.connections.values()
+            .any(|c| (c.from_block == block_id && c.to_block == target_id)
+                  || (c.to_block == block_id && c.from_block == target_id))
+    }
+
     /// 获取Block的显示模式
     fn get_block_display_mode(&self, block_id: Uuid) -> BlockDisplayMode {
         match self.editor_mode {
@@ -2076,6 +2088,7 @@ impl WorkflowApp {
                 // - 连接拖拽源块展开为 Full
                 // - 连接拖拽目标块展开为 Full
                 // - hideable 块：有连线时隐藏，孤立时显示为 Mini
+                // - hover 父块时，连接的 hideable 块也展开
                 // - 其他显示为 Mini
 
                 // 检查是否为连接拖拽源块
@@ -2096,10 +2109,22 @@ impl WorkflowApp {
                 let has_connections = self.workflow.connections.values()
                     .any(|c| c.from_block == block_id || c.to_block == block_id);
 
+                // 检查是否因为 hover 父块而需要展开
+                let should_expand_due_to_hover = if let Some(hovered_id) = self.hovered_block_id {
+                    // 如果当前块连接到被 hover 的块，则展开
+                    self.is_connected_to(block_id, hovered_id)
+                } else {
+                    false
+                };
+
                 // hideable 块且有连线时隐藏
                 if is_hideable && has_connections {
                     // 但如果正在 hover 或拖拽则展开
                     if Some(block_id) == self.hovered_block_id {
+                        return BlockDisplayMode::Full;
+                    }
+                    // hover 父块时联动展开
+                    if should_expand_due_to_hover {
                         return BlockDisplayMode::Full;
                     }
                     if Some(block_id) == self.connection_target_block {
