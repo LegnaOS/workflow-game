@@ -2,7 +2,7 @@
 
 use crate::script::{ScriptRegistry, ScriptWatcher};
 use crate::ui::{BlockWidget, Canvas, ConnectionIndicator, ConnectionMode, ConnectionWidget, LayerEvent, LayerPanel, MenuEvent, PropertyPanel, SideMenu};
-use crate::workflow::{Block, BlockDisplayMode, BlueprintStorage, Clipboard, Connection, Vec2, Workflow, WorkflowExecutor};
+use crate::workflow::{Block, BlockDisplayMode, BlueprintStorage, Clipboard, Connection, GamePackage, Vec2, Workflow, WorkflowExecutor};
 use anyhow::Result;
 use egui::{CentralPanel, Context, Key, Pos2, SidePanel};
 use std::collections::HashSet;
@@ -86,6 +86,9 @@ pub struct WorkflowApp {
     hovered_block_id: Option<Uuid>,
     // 连线时目标块（用于展开显示）
     connection_target_block: Option<Uuid>,
+    // 发布对话框
+    show_publish_dialog: bool,
+    publish_game_name: String,
 }
 
 /// 右键菜单目标
@@ -174,6 +177,8 @@ impl WorkflowApp {
             editor_mode: EditorMode::Blueprint,
             hovered_block_id: None,
             connection_target_block: None,
+            show_publish_dialog: false,
+            publish_game_name: String::new(),
         })
     }
 
@@ -563,6 +568,10 @@ impl eframe::App for WorkflowApp {
                     self.show_save_dialog = true;
                     self.save_options = SaveOptions::default();
                 }
+                if ui.button("📦 发布").clicked() {
+                    self.show_publish_dialog = true;
+                    self.publish_game_name = self.workflow.name.clone();
+                }
 
                 ui.separator();
 
@@ -646,6 +655,7 @@ impl eframe::App for WorkflowApp {
         // 对话框
         self.draw_save_dialog(ctx);
         self.draw_password_dialog(ctx);
+        self.draw_publish_dialog(ctx);
 
         // 侧边菜单
         // 左侧Block菜单
@@ -1948,6 +1958,146 @@ impl WorkflowApp {
                     }
                 });
             });
+    }
+
+    fn draw_publish_dialog(&mut self, ctx: &Context) {
+        if !self.show_publish_dialog {
+            return;
+        }
+
+        egui::Window::new("📦 发布游戏包")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.heading("发布设置");
+                ui.add_space(8.0);
+
+                ui.horizontal(|ui| {
+                    ui.label("游戏名称:");
+                    ui.text_edit_singleline(&mut self.publish_game_name);
+                });
+
+                ui.add_space(8.0);
+                ui.label("发布后将创建发布文件夹，包含：");
+                ui.label("  • 播放器可执行文件");
+                ui.label("  • 加密的游戏数据包 (.lpack)");
+
+                ui.add_space(12.0);
+                ui.separator();
+                ui.add_space(8.0);
+
+                ui.horizontal(|ui| {
+                    let valid = !self.publish_game_name.trim().is_empty();
+
+                    if ui.add_enabled(valid, egui::Button::new("📁 选择发布目录")).clicked() {
+                        self.show_publish_dialog = false;
+                        self.publish_game_package();
+                    }
+
+                    if ui.button("取消").clicked() {
+                        self.show_publish_dialog = false;
+                    }
+                });
+            });
+    }
+
+    fn publish_game_package(&mut self) {
+        // 选择发布目录
+        let folder = rfd::FileDialog::new()
+            .set_title("选择发布目录")
+            .pick_folder();
+
+        let Some(base_dir) = folder else { return };
+
+        // 创建发布文件夹: {目录}/{游戏名}_publish/
+        let publish_dir = base_dir.join(format!("{}_publish", self.publish_game_name));
+        if let Err(e) = std::fs::create_dir_all(&publish_dir) {
+            self.add_log("ERROR", format!("创建发布目录失败: {}", e));
+            return;
+        }
+
+        // 1. 复制播放器
+        let player_copied = self.copy_player_to(&publish_dir);
+
+        // 2. 创建并保存游戏包
+        let game_path = publish_dir.join(format!("{}.lpack", self.publish_game_name));
+        match GamePackage::from_workflow(
+            &self.workflow,
+            &self.registry,
+            &self.publish_game_name,
+            "1.0.0",
+        ) {
+            Ok(package) => {
+                match package.save(&game_path) {
+                    Ok(()) => {
+                        self.add_log("INFO", format!("游戏包: {}", game_path.display()));
+                    }
+                    Err(e) => {
+                        self.add_log("ERROR", format!("保存游戏包失败: {}", e));
+                        return;
+                    }
+                }
+            }
+            Err(e) => {
+                self.add_log("ERROR", format!("创建游戏包失败: {}", e));
+                return;
+            }
+        }
+
+        if player_copied {
+            self.add_log("INFO", format!("发布成功: {}", publish_dir.display()));
+        } else {
+            self.add_log("WARN", format!("发布完成（无播放器）: {}", publish_dir.display()));
+        }
+    }
+
+    /// 复制播放器到发布目录
+    fn copy_player_to(&mut self, publish_dir: &std::path::Path) -> bool {
+        // 获取当前可执行文件路径
+        let Ok(exe_path) = std::env::current_exe() else {
+            self.add_log("WARN", "无法获取当前程序路径".to_string());
+            return false;
+        };
+
+        let exe_dir = exe_path.parent().unwrap_or(std::path::Path::new("."));
+
+        // 根据平台确定播放器名称
+        #[cfg(target_os = "windows")]
+        let player_name = "workflow_player.exe";
+        #[cfg(not(target_os = "windows"))]
+        let player_name = "workflow_player";
+
+        // 尝试多个可能的位置
+        let search_paths = [
+            exe_dir.join(player_name),                          // 同目录
+            exe_dir.join("players").join(player_name),          // players子目录
+            exe_dir.parent().unwrap_or(exe_dir).join(player_name), // 上级目录
+        ];
+
+        for player_path in &search_paths {
+            if player_path.exists() {
+                let dest = publish_dir.join(player_name);
+                match std::fs::copy(player_path, &dest) {
+                    Ok(_) => {
+                        // 设置可执行权限 (Unix)
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::PermissionsExt;
+                            let _ = std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755));
+                        }
+                        self.add_log("INFO", format!("播放器: {}", dest.display()));
+                        return true;
+                    }
+                    Err(e) => {
+                        self.add_log("WARN", format!("复制播放器失败: {}", e));
+                    }
+                }
+            }
+        }
+
+        self.add_log("WARN", "未找到播放器，请手动复制 workflow_player".to_string());
+        false
     }
 
     /// 渲染可交互Block的控件

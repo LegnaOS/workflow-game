@@ -6,6 +6,7 @@
 set -e
 
 APP_NAME="workflow_engine"
+PLAYER_NAME="workflow_player"
 DIST_DIR="dist"
 
 # 颜色输出
@@ -51,35 +52,46 @@ create_package() {
     local target=$1
     local platform_name=$2
     local exe_name=$3
-    
+    local player_exe_name=$4
+
     log_info "打包 ${platform_name}..."
-    
+
     local pkg_dir="${DIST_DIR}/${APP_NAME}-${VERSION}-${platform_name}"
     rm -rf "$pkg_dir"
     mkdir -p "$pkg_dir"
-    
-    # 复制可执行文件
+    mkdir -p "$pkg_dir/players"
+
+    # 复制编辑器可执行文件
     local exe_path="target/${target}/release/${exe_name}"
     if [[ -f "$exe_path" ]]; then
         cp "$exe_path" "$pkg_dir/"
-        log_info "  ✓ 可执行文件"
+        log_info "  ✓ 编辑器: ${exe_name}"
     else
         log_error "找不到: $exe_path"
         return 1
     fi
-    
+
+    # 复制播放器可执行文件
+    local player_path="target/${target}/release/${player_exe_name}"
+    if [[ -f "$player_path" ]]; then
+        cp "$player_path" "$pkg_dir/players/"
+        log_info "  ✓ 播放器: ${player_exe_name}"
+    else
+        log_warn "找不到播放器: $player_path"
+    fi
+
     # 复制脚本目录
     if [[ -d "scripts" ]]; then
         cp -r scripts "$pkg_dir/"
         log_info "  ✓ Block脚本 (scripts/)"
     fi
-    
+
     # 复制示例工作流
     if [[ -d "workflows" ]]; then
         cp -r workflows "$pkg_dir/"
         log_info "  ✓ 示例工作流 (workflows/)"
     fi
-    
+
     # 复制文档
     if [[ -f "docs/BLOCK_DEVELOPMENT.md" ]]; then
         cp docs/BLOCK_DEVELOPMENT.md "$pkg_dir/"
@@ -145,13 +157,13 @@ build_target() {
 # 构建Mac ARM64
 build_mac_arm() {
     build_target "aarch64-apple-darwin" "macos-arm64"
-    create_package "aarch64-apple-darwin" "macos-arm64" "$APP_NAME"
+    create_package "aarch64-apple-darwin" "macos-arm64" "$APP_NAME" "$PLAYER_NAME"
 }
 
 # 构建Mac Intel
 build_mac_intel() {
     build_target "x86_64-apple-darwin" "macos-x64"
-    create_package "x86_64-apple-darwin" "macos-x64" "$APP_NAME"
+    create_package "x86_64-apple-darwin" "macos-x64" "$APP_NAME" "$PLAYER_NAME"
 }
 
 # 构建Windows (交叉编译)
@@ -167,7 +179,7 @@ build_windows() {
     fi
 
     build_target "x86_64-pc-windows-gnu" "windows-x64"
-    create_package "x86_64-pc-windows-gnu" "windows-x64" "${APP_NAME}.exe"
+    create_package "x86_64-pc-windows-gnu" "windows-x64" "${APP_NAME}.exe" "${PLAYER_NAME}.exe"
 }
 
 # 主函数

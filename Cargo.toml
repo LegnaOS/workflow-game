@@ -1,7 +1,15 @@
 [package]
 name = "workflow_engine"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2021"
+
+[[bin]]
+name = "workflow_engine"
+path = "src/main.rs"
+
+[[bin]]
+name = "workflow_player"
+path = "src/player.rs"
 
 [dependencies]
 # GUI

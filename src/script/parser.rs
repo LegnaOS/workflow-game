@@ -51,6 +51,11 @@ impl ScriptParser {
         })
     }
 
+    /// 从内存中的源码解析（用于播放器从加密包加载）
+    pub fn parse_from_source(&self, source: &str, virtual_path: &Path) -> Result<BlockDefinition> {
+        self.parse(source, virtual_path)
+    }
+
     fn parse_meta(&self, table: &Table, script_path: &Path) -> Result<BlockMeta> {
         use crate::script::WidgetType;
 
