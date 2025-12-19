@@ -26,7 +26,8 @@ return {
     },
 
     execute = function(self, inputs)
-        local props = self.properties or {}
+        -- 防御性检查：确保 self 和 properties 存在
+        local props = (self and self.properties) or {}
         local all_devices = usb.devices()
         local filtered = {}
 

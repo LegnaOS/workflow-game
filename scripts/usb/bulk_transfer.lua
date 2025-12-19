@@ -33,8 +33,9 @@ return {
     },
 
     execute = function(self, inputs)
-        local props = self.properties or {}
-        local state = self.state or {}
+        -- 防御性检查
+        local props = (self and self.properties) or {}
+        local state = (self and self.state) or {}
 
         local vid = tonumber(props.vid, 16) or 0
         local pid = tonumber(props.pid, 16) or 0
