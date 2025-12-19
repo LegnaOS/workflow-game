@@ -1,6 +1,7 @@
 //! 脚本解析器 - 从Lua脚本解析Block定义
 
 use crate::script::types::*;
+use crate::usb::register_usb_module;
 use anyhow::{anyhow, Result};
 use mlua::{Lua, Table, Value as LuaValue};
 use std::path::Path;
@@ -18,6 +19,10 @@ pub struct ScriptParser {
 impl ScriptParser {
     pub fn new() -> Result<Self> {
         let lua = Lua::new();
+        // 注册 USB 模块，使脚本可以引用 usb 全局变量
+        if let Err(e) = register_usb_module(&lua) {
+            log::warn!("注册USB模块到解析器失败: {}", e);
+        }
         Ok(Self { lua })
     }
 

@@ -23,6 +23,11 @@ impl WorkflowExecutor {
         let lua = Lua::new();
         // 注册 USB 模块
         register_usb_module(&lua).map_err(|e| anyhow!("注册USB模块失败: {}", e))?;
+
+        // 验证 USB 模块已注册
+        let has_usb: bool = lua.load("return usb ~= nil").eval().unwrap_or(false);
+        log::info!("USB 模块注册状态: {}", if has_usb { "成功" } else { "失败" });
+
         Ok(Self { lua })
     }
 
@@ -124,6 +129,13 @@ impl WorkflowExecutor {
 
         // 加载并执行Lua脚本
         let script_content = crate::script::ScriptLoader::load(&definition.script_path)?;
+
+        // 调试：检查 usb 模块在脚本执行前是否存在
+        let usb_check: bool = self.lua.load("return usb ~= nil").eval().unwrap_or(false);
+        if !usb_check {
+            log::warn!("[{}] 脚本执行前 usb 模块不存在！", block.script_id);
+        }
+
         let script_table: Table = self.lua.load(&script_content).eval().map_err(lua_err)?;
 
         // 获取block的state用于传递给Lua
@@ -153,8 +165,16 @@ impl WorkflowExecutor {
 
         // 调用execute函数
         if let Ok(execute_fn) = script_table.get::<mlua::Function>("execute") {
-            // Debug: 打印输入
+            // Debug: 打印输入和properties
             log::debug!("[{}] inputs: {:?}", block.script_id, inputs);
+            log::debug!("[{}] properties: {:?}", block.script_id, block.properties);
+
+            // 验证 self_table 是否正确设置
+            if let Ok(props) = self_table.get::<Table>("properties") {
+                log::debug!("[{}] self.properties exists, len={}", block.script_id, props.len().unwrap_or(0));
+            } else {
+                log::warn!("[{}] self.properties NOT SET!", block.script_id);
+            }
 
             let result: Table = execute_fn.call((self_table.clone(), inputs_table)).map_err(lua_err)?;
 
