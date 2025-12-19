@@ -841,7 +841,8 @@ return {
         { id = "count", name = "设备数量", type = "number" }
     },
 
-    execute = function(inputs, outputs, props, state)
+    execute = function(self, inputs)
+        local props = self.properties or {}
         local all_devices = usb.devices()
         local filtered = {}
 
@@ -855,8 +856,7 @@ return {
             if match then table.insert(filtered, dev) end
         end
 
-        outputs.devices = filtered
-        outputs.count = #filtered
+        return { devices = filtered, count = #filtered }
     end
 }
 ```
@@ -893,7 +893,10 @@ return {
         { id = "error", name = "错误", type = "string" }
     },
 
-    execute = function(inputs, outputs, props, state)
+    execute = function(self, inputs)
+        local props = self.properties or {}
+        local state = self.state or {}
+
         local vid = tonumber(props.vid, 16) or 0
         local pid = tonumber(props.pid, 16) or 0
 
@@ -905,9 +908,7 @@ return {
 
             local ok, dev = pcall(usb.open, vid, pid)
             if not ok then
-                outputs.success = false
-                outputs.error = "无法打开设备: " .. tostring(dev)
-                return
+                return { success = false, error = "无法打开设备: " .. tostring(dev) }
             end
 
             state.device = dev
@@ -925,15 +926,9 @@ return {
         end)
 
         if ok then
-            outputs.data = result.data
-            outputs.length = result.length
-            outputs.success = true
-            outputs.error = ""
+            return { data = result.data, length = result.length, success = true, error = "" }
         else
-            outputs.data = ""
-            outputs.length = 0
-            outputs.success = false
-            outputs.error = tostring(result)
+            return { data = "", length = 0, success = false, error = tostring(result) }
         end
     end
 }
@@ -965,7 +960,7 @@ return {
 
     inputs = {
         { id = "trigger", name = "触发", type = "event" },
-        { id = "data", name = "发送数据", type = "string", optional = true }
+        { id = "data", name = "发送数据", type = "string" }
     },
 
     outputs = {
@@ -974,55 +969,53 @@ return {
         { id = "success", name = "成功", type = "boolean" }
     },
 
-    execute = function(inputs, outputs, props, state)
+    execute = function(self, inputs)
+        local props = self.properties or {}
+
         local vid = tonumber(props.vid, 16) or 0
         local pid = tonumber(props.pid, 16) or 0
 
         local ok, device = pcall(usb.open, vid, pid)
         if not ok then
-            outputs.success = false
-            return
+            return { response = "", length = 0, success = false }
         end
 
-        local rt = usb.request_type(props.direction, props.req_type, "device")
+        local rt = usb.request_type(props.direction or "in", props.req_type or "vendor", "device")
 
         if props.direction == "in" then
             local ok, result = pcall(function()
                 return device:read_control({
                     request_type = rt,
-                    request = props.request,
-                    value = props.value,
-                    index = props.index,
-                    size = props.size,
+                    request = props.request or 0,
+                    value = props.value or 0,
+                    index = props.index or 0,
+                    size = props.size or 64,
                     timeout = 1000
                 })
             end)
+            device:close()
 
             if ok then
-                outputs.response = result.data
-                outputs.length = result.length
-                outputs.success = true
+                return { response = result.data, length = result.length, success = true }
             else
-                outputs.success = false
+                return { response = "", length = 0, success = false }
             end
         else
             local data = inputs.data or ""
             local ok, n = pcall(function()
                 return device:write_control({
                     request_type = rt,
-                    request = props.request,
-                    value = props.value,
-                    index = props.index,
+                    request = props.request or 0,
+                    value = props.value or 0,
+                    index = props.index or 0,
                     data = data,
                     timeout = 1000
                 })
             end)
+            device:close()
 
-            outputs.length = ok and n or 0
-            outputs.success = ok
+            return { response = "", length = ok and n or 0, success = ok }
         end
-
-        device:close()
     end
 }
 ```

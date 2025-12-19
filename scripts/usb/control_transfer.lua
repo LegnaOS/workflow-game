@@ -25,7 +25,7 @@ return {
 
     inputs = {
         { id = "trigger", name = "触发", type = "event" },
-        { id = "data", name = "发送数据 (OUT)", type = "string", optional = true }
+        { id = "data", name = "发送数据 (OUT)", type = "string" }
     },
 
     outputs = {
@@ -35,74 +35,94 @@ return {
         { id = "error", name = "错误信息", type = "string" }
     },
 
-    execute = function(inputs, outputs, props, state)
+    execute = function(self, inputs)
+        local props = self.properties or {}
+
         local vid = tonumber(props.vid, 16) or 0
         local pid = tonumber(props.pid, 16) or 0
-        
-        -- 初始化输出
-        outputs.response = ""
-        outputs.length = 0
-        outputs.success = false
-        outputs.error = ""
-        
+
         -- 打开设备
         local ok, device = pcall(usb.open, vid, pid)
         if not ok then
-            outputs.error = "无法打开设备: " .. tostring(device)
-            return
+            return {
+                response = "",
+                length = 0,
+                success = false,
+                error = "无法打开设备: " .. tostring(device)
+            }
         end
-        
+
         -- 构建 request_type
-        local rt_ok, rt = pcall(usb.request_type, props.direction, props.req_type, props.recipient)
+        local direction = props.direction or "in"
+        local req_type = props.req_type or "vendor"
+        local recipient = props.recipient or "device"
+
+        local rt_ok, rt = pcall(usb.request_type, direction, req_type, recipient)
         if not rt_ok then
-            outputs.error = "无效的 request_type 参数: " .. tostring(rt)
-            device:close()
-            return
+            pcall(function() device:close() end)
+            return {
+                response = "",
+                length = 0,
+                success = false,
+                error = "无效的 request_type 参数: " .. tostring(rt)
+            }
         end
-        
+
+        local out_response = ""
+        local out_length = 0
+        local out_success = false
+        local out_error = ""
+
         -- 执行传输
-        if props.direction == "in" then
+        if direction == "in" then
             local ok, result = pcall(function()
                 return device:read_control({
                     request_type = rt,
-                    request = props.request,
-                    value = props.value,
-                    index = props.index,
-                    size = props.size,
-                    timeout = props.timeout
+                    request = props.request or 0,
+                    value = props.value or 0,
+                    index = props.index or 0,
+                    size = props.size or 64,
+                    timeout = props.timeout or 1000
                 })
             end)
-            
+
             if ok then
-                outputs.response = result.data
-                outputs.length = result.length
-                outputs.success = true
+                out_response = result.data
+                out_length = result.length
+                out_success = true
             else
-                outputs.error = tostring(result)
+                out_error = tostring(result)
             end
         else
             local data = inputs.data or ""
             local ok, n = pcall(function()
                 return device:write_control({
                     request_type = rt,
-                    request = props.request,
-                    value = props.value,
-                    index = props.index,
+                    request = props.request or 0,
+                    value = props.value or 0,
+                    index = props.index or 0,
                     data = data,
-                    timeout = props.timeout
+                    timeout = props.timeout or 1000
                 })
             end)
-            
+
             if ok then
-                outputs.length = n
-                outputs.success = true
+                out_length = n
+                out_success = true
             else
-                outputs.error = tostring(n)
+                out_error = tostring(n)
             end
         end
-        
+
         -- 关闭设备
         pcall(function() device:close() end)
+
+        return {
+            response = out_response,
+            length = out_length,
+            success = out_success,
+            error = out_error
+        }
     end
 }
 

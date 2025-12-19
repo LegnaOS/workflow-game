@@ -15,14 +15,14 @@ return {
         { id = "pid", name = "PID (十六进制)", type = "string", default = "0000" },
         { id = "interface", name = "接口号", type = "number", default = 0, min = 0, max = 15 },
         { id = "endpoint", name = "端点地址", type = "number", default = 129, min = 0, max = 255 },
-        { id = "direction", name = "方向", type = "string", default = "read" },
+        { id = "direction", name = "方向 (read/write)", type = "string", default = "read" },
         { id = "size", name = "读取大小", type = "number", default = 64, min = 1, max = 4096 },
         { id = "timeout", name = "超时(ms)", type = "number", default = 1000, min = 100, max = 30000 }
     },
 
     inputs = {
         { id = "trigger", name = "触发", type = "event" },
-        { id = "data", name = "发送数据", type = "string", optional = true }
+        { id = "data", name = "发送数据", type = "string" }
     },
 
     outputs = {
@@ -32,16 +32,19 @@ return {
         { id = "error", name = "错误信息", type = "string" }
     },
 
-    execute = function(inputs, outputs, props, state)
+    execute = function(self, inputs)
+        local props = self.properties or {}
+        local state = self.state or {}
+
         local vid = tonumber(props.vid, 16) or 0
         local pid = tonumber(props.pid, 16) or 0
-        
-        -- 初始化输出
-        outputs.data = ""
-        outputs.length = 0
-        outputs.success = false
-        outputs.error = ""
-        
+
+        -- 默认输出
+        local out_data = ""
+        local out_length = 0
+        local out_success = false
+        local out_error = ""
+
         -- 尝试复用已打开的设备
         if not state.device or state.vid ~= vid or state.pid ~= pid then
             -- 关闭旧设备
@@ -49,61 +52,79 @@ return {
                 pcall(function() state.device:close() end)
                 state.device = nil
             end
-            
+
             -- 打开新设备
             local ok, dev = pcall(usb.open, vid, pid)
             if not ok then
-                outputs.error = "无法打开设备: " .. tostring(dev)
-                return
+                return {
+                    data = "",
+                    length = 0,
+                    success = false,
+                    error = "无法打开设备: " .. tostring(dev)
+                }
             end
-            
+
             state.device = dev
             state.vid = vid
             state.pid = pid
             state.claimed = {}
-            
+
             -- 自动分离内核驱动
             pcall(function() dev:set_auto_detach_kernel_driver(true) end)
         end
-        
+
         -- 确保接口已声明
-        if not state.claimed[props.interface] then
+        local iface = props.interface or 0
+        if not state.claimed then state.claimed = {} end
+        if not state.claimed[iface] then
             local ok, err = pcall(function()
-                state.device:claim_interface(props.interface)
+                state.device:claim_interface(iface)
             end)
             if not ok then
-                outputs.error = "无法声明接口: " .. tostring(err)
-                return
+                return {
+                    data = "",
+                    length = 0,
+                    success = false,
+                    error = "无法声明接口: " .. tostring(err)
+                }
             end
-            state.claimed[props.interface] = true
+            state.claimed[iface] = true
         end
-        
+
         -- 执行传输
-        if props.direction == "read" or props.direction == "in" then
+        local direction = props.direction or "read"
+        if direction == "read" or direction == "in" then
             local ok, result = pcall(function()
-                return state.device:read_bulk(props.endpoint, props.size, props.timeout)
+                return state.device:read_bulk(props.endpoint or 129, props.size or 64, props.timeout or 1000)
             end)
-            
+
             if ok then
-                outputs.data = result.data
-                outputs.length = result.length
-                outputs.success = true
+                out_data = result.data
+                out_length = result.length
+                out_success = true
             else
-                outputs.error = tostring(result)
+                out_error = tostring(result)
             end
         else
             local data = inputs.data or ""
             local ok, n = pcall(function()
-                return state.device:write_bulk(props.endpoint, data, props.timeout)
+                return state.device:write_bulk(props.endpoint or 1, data, props.timeout or 1000)
             end)
-            
+
             if ok then
-                outputs.length = n
-                outputs.success = true
+                out_length = n
+                out_success = true
             else
-                outputs.error = tostring(n)
+                out_error = tostring(n)
             end
         end
+
+        return {
+            data = out_data,
+            length = out_length,
+            success = out_success,
+            error = out_error
+        }
     end
 }
 

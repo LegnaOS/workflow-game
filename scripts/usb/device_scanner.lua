@@ -12,8 +12,7 @@ return {
 
     properties = {
         { id = "vid_filter", name = "VID 过滤 (十六进制)", type = "string", default = "" },
-        { id = "pid_filter", name = "PID 过滤 (十六进制)", type = "string", default = "" },
-        { id = "auto_scan", name = "自动扫描", type = "boolean", default = false }
+        { id = "pid_filter", name = "PID 过滤 (十六进制)", type = "string", default = "" }
     },
 
     inputs = {
@@ -26,21 +25,22 @@ return {
         { id = "first", name = "第一个设备", type = "table" }
     },
 
-    execute = function(inputs, outputs, props, state)
+    execute = function(self, inputs)
+        local props = self.properties or {}
         local all_devices = usb.devices()
         local filtered = {}
-        
+
         -- 解析过滤器
         local vid_filter = nil
         local pid_filter = nil
-        
+
         if props.vid_filter and props.vid_filter ~= "" then
             vid_filter = tonumber(props.vid_filter, 16)
         end
         if props.pid_filter and props.pid_filter ~= "" then
             pid_filter = tonumber(props.pid_filter, 16)
         end
-        
+
         -- 过滤设备
         for _, dev in ipairs(all_devices) do
             local match = true
@@ -66,10 +66,12 @@ return {
                 })
             end
         end
-        
-        outputs.devices = filtered
-        outputs.count = #filtered
-        outputs.first = filtered[1] or {}
+
+        return {
+            devices = filtered,
+            count = #filtered,
+            first = filtered[1] or {}
+        }
     end
 }
 
