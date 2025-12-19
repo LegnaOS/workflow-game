@@ -1,384 +1,444 @@
 # Block Development Guide
 
-## Overview
+> A Block is the basic execution unit of the workflow engine. Each Block is a Lua script.
+> Drop into `scripts/` directory, supports hot reload.
 
-A Block is the basic execution unit of the workflow engine. Each Block is a Lua script defining:
+---
 
-- **Metadata** - ID, name, color
-- **Ports** - inputs/outputs
-- **Properties** - configurable parameters
-- **Execute logic** - Lua function
+## Table of Contents
 
-Drop scripts into `scripts/` directory, engine auto-scans and loads with hot reload.
+- [Quick Start](#quick-start)
+- [Script Structure](#script-structure)
+- [Data Types](#data-types)
+- [Core Concepts](#core-concepts)
+- [Interactive Widgets](#interactive-widgets)
+- [Animation System](#animation-system)
+- [USB Development](#usb-development)
+- [Best Practices](#best-practices)
 
-## Directory Structure
+---
 
-```
-scripts/
-├── game/           # Game entities
-│   ├── character.lua
-│   ├── monster.lua
-│   └── attack.lua
-├── input/          # Interactive input
-│   ├── text_input.lua
-│   ├── password_input.lua
-│   └── button.lua
-├── logic/          # Logic control
-│   ├── branch.lua
-│   └── compare.lua
-├── math/           # Math operations
-│   ├── add.lua
-│   └── calc.lua
-└── util/           # Utilities
-    ├── splitter.lua
-    └── merger.lua
-```
+## Quick Start
 
-## Block Script Format
+**Minimal example** - Create `scripts/my/double.lua`:
 
 ```lua
 return {
-    -- Metadata (required)
     meta = {
-        id = "category.name",      -- Unique ID (required)
-        name = "Display Name",     -- UI name
-        category = "Category",     -- Category name
-        description = "Tooltip",   -- Hover description
-        color = "#4CAF50"          -- Hex color
+        id = "my.double",
+        name = "Double",
+        category = "My",
+        color = "#FF5722"
     },
-
-    -- Properties (editable parameters)
-    properties = {
-        {
-            id = "prop_id",
-            name = "Property",
-            type = "number",       -- number/string/boolean
-            default = 10,
-            min = 0,
-            max = 100
-        }
-    },
-
-    -- Input ports
     inputs = {
-        {
-            id = "input_id",
-            name = "Input",
-            type = "number",       -- number/string/boolean/event/any
-            default = 0
-        }
+        { id = "value", name = "Input", type = "number", default = 0 }
     },
-
-    -- Output ports
     outputs = {
-        {
-            id = "output_id",
-            name = "Output",
-            type = "number",
-            default = 0
-        }
+        { id = "result", name = "Result", type = "number" }
+    },
+    execute = function(self, inputs)
+        return { result = inputs.value * 2 }
+    end
+}
+```
+
+Appears immediately in IDE left panel under "My" category.
+
+---
+
+## Script Structure
+
+```lua
+return {
+    -- ═══════════════════════════════════════════════════════════
+    -- Metadata (required)
+    -- ═══════════════════════════════════════════════════════════
+    meta = {
+        id = "category.name",       -- Unique identifier (required)
+        name = "Display Name",      -- Block title
+        category = "Category",      -- Left panel category
+        description = "Tooltip",    -- Hover description
+        color = "#4CAF50",          -- Title bar color
+        hideable = false,           -- Hide in preview mode (optional)
+        widget = nil                -- Interactive widget type (optional)
     },
 
-    -- Execute function (core logic)
+    -- ═══════════════════════════════════════════════════════════
+    -- Properties (optional) - Editable in right panel
+    -- ═══════════════════════════════════════════════════════════
+    properties = {
+        { id = "damage", name = "Damage", type = "number", default = 10, min = 0, max = 999 },
+        { id = "name", name = "Name", type = "string", default = "Hero" },
+        { id = "active", name = "Active", type = "boolean", default = true }
+    },
+
+    -- ═══════════════════════════════════════════════════════════
+    -- Input ports (optional) - Left side yellow dots
+    -- ═══════════════════════════════════════════════════════════
+    inputs = {
+        { id = "trigger", name = "Trigger", type = "event" },
+        { id = "value", name = "Value", type = "number", default = 0 }
+    },
+
+    -- ═══════════════════════════════════════════════════════════
+    -- Output ports (optional) - Right side blue dots
+    -- ═══════════════════════════════════════════════════════════
+    outputs = {
+        { id = "result", name = "Result", type = "number" },
+        { id = "done", name = "Done", type = "event" }
+    },
+
+    -- ═══════════════════════════════════════════════════════════
+    -- Execute function (required) - Core logic
+    -- ═══════════════════════════════════════════════════════════
     execute = function(self, inputs)
-        -- self.properties: access properties
-        -- self.state: persistent state
-        -- inputs: input port values
-        
-        local result = inputs.input_id * 2
-        
+        -- self.properties  → Property values
+        -- self.state       → Persistent state (across executions)
+        -- inputs           → Input port values
+
         return {
-            output_id = result
+            result = inputs.value * 2,
+            done = true  -- event type: non-nil = triggered
         }
     end
 }
 ```
+
+---
 
 ## Data Types
 
-| Type | Lua Type | Description |
-|------|----------|-------------|
-| `number` | number | Numeric value |
-| `string` | string | Text string |
-| `boolean` | boolean | True/false |
-| `event` | any/nil | Event trigger (non-nil = triggered) |
-| `any` | any | Any type |
+| Type | Lua Type | Port Color | Description |
+|------|----------|------------|-------------|
+| `number` | number | Blue | Numeric value |
+| `string` | string | Green | Text string |
+| `boolean` | boolean | Orange | True/false |
+| `event` | any/nil | Yellow | Event trigger (non-nil = triggered) |
+| `any` | any | Gray | Any type |
+| `table` | table | Purple | Table/array |
 
-## State Management
+---
 
-Blocks can persist state across executions via `self.state`:
+## Core Concepts
+
+### State Management
+
+`self.state` persists across executions:
 
 ```lua
 execute = function(self, inputs)
-    local state = self.state or {}
-    state.count = (state.count or 0) + 1
+    local state = self.state or { count = 0 }
+    state.count = state.count + 1
     self.state = state
-    return { count_out = state.count }
+    return { count = state.count }
 end
 ```
 
-## Events
+### Event Flow
 
-Events control execution flow:
+Events control execution flow, only execute main logic when triggered:
 
 ```lua
-inputs = {
-    { id = "trigger", name = "Trigger", type = "event" }
-},
-
 execute = function(self, inputs)
-    if inputs.trigger then
-        return { result = 42, event_out = true }
+    if not inputs.trigger then
+        return { result = 0, done = nil }  -- nil = don't trigger downstream
     end
-    return { result = 0, event_out = nil }
+    -- Execute when triggered
+    return { result = 42, done = true }
 end
 ```
 
-## Example: Counter Block
+### Dynamic Output Ports
 
+Returning fields not defined in `outputs` auto-creates dynamic ports:
+
+```lua
+execute = function(self, inputs)
+    local result = { count = 3 }
+    -- Dynamically generate dev1_name, dev2_name, dev3_name ports
+    for i = 1, 3 do
+        result["dev" .. i .. "_name"] = "Device " .. i
+    end
+    return result
+end
+```
+
+### Debugging
+
+```lua
+execute = function(self, inputs)
+    print("Input:", inputs.value)
+    print("Property:", self.properties.damage)
+    print("State:", self.state)
+    return { result = 42 }
+end
+```
+
+View in console (`Ctrl+`` ). Can also connect `debug/logger` Block.
+
+---
+
+## Interactive Widgets
+
+Enable via `meta.widget`:
+
+| widget | Description | state field |
+|--------|-------------|-------------|
+| `textinput` | Text box | `widget_text` |
+| `password` | Password box | `widget_text` |
+| `textarea` | Multi-line text | `widget_text` |
+| `button` | Button | `widget_checked` |
+| `checkbox` | Checkbox | `widget_checked` |
+| `slider` | Slider | `widget_value` |
+
+**Example: Text input**
 ```lua
 return {
     meta = {
-        id = "util.counter",
-        name = "Counter",
-        category = "Utility",
-        color = "#2196F3"
+        id = "input.text",
+        name = "Text Input",
+        widget = "textinput",
+        placeholder = "Enter..."
     },
-
-    properties = {
-        { id = "step", name = "Step", type = "number", default = 1 },
-        { id = "max", name = "Max", type = "number", default = 100 }
-    },
-
-    inputs = {
-        { id = "increment", name = "Increment", type = "event" },
-        { id = "reset", name = "Reset", type = "event" }
-    },
-
     outputs = {
-        { id = "value", name = "Value", type = "number", default = 0 },
-        { id = "overflow", name = "Overflow", type = "event" }
+        { id = "value", name = "Text", type = "string" }
     },
-
     execute = function(self, inputs)
-        local state = self.state or { value = 0 }
-        local props = self.properties
-        
-        if inputs.reset then
-            state.value = 0
-        elseif inputs.increment then
-            state.value = state.value + (props.step or 1)
-        end
-        
-        local overflow = nil
-        if state.value >= (props.max or 100) then
-            overflow = true
-            state.value = 0
-        end
-        
-        self.state = state
-        return { value = state.value, overflow = overflow }
+        return { value = self.state.widget_text or "" }
     end
 }
 ```
 
-## Hot Reload
-
-Save script, engine auto-reloads. Errors shown in console.
-
-## Block Animation System
-
-Blocks can implement position offset animations (attack lunge, hit recoil, etc.) by setting `self.state._animation`.
-
+**Example: Button**
 ```lua
 execute = function(self, inputs)
-    -- Set animation: x/y is offset (pixels), speed is movement speed (pixels/sec)
-    if inputs.attack_trigger then
-        -- Move right 30 pixels when attacking
-        self.state._animation = { x = 30, y = 0, speed = 300 }
-    else
-        -- Return to original position
-        self.state._animation = { x = 0, y = 0, speed = 200 }
-    end
-
-    return { ... }
+    local state = self.state or {}
+    local was = state.last_checked or false
+    local now = self.state.widget_checked or false
+    local clicked = now and not was
+    state.last_checked = now
+    self.state = state
+    return { clicked = clicked and true or nil }
 end
 ```
 
-### Animation Parameters
+### hideable Property
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `x` | number | Horizontal offset (positive = right, negative = left) |
-| `y` | number | Vertical offset (positive = down, negative = up) |
-| `speed` | number | Movement speed (pixels/sec), 0 = instant |
+When `meta.hideable = true`, in preview mode:
+- Has connections → Hidden
+- No connections → Mini mode
+- On hover → Temporarily expand
 
-### Example: Character Attack Animation
+Suitable for: constant nodes, equipment attachments, skill nodes, etc.
+
+---
+
+## Animation System
+
+Use `self.state._animation` for position offset animations:
 
 ```lua
--- Character lunges forward when attacking
-if inputs.action_trigger then
+self.state._animation = { x = 30, y = 0, speed = 300 }
+```
+
+| Parameter | Description |
+|-----------|-------------|
+| `x` | Horizontal offset (positive=right) |
+| `y` | Vertical offset (positive=down) |
+| `speed` | Speed (pixels/sec), 0=instant |
+
+**Example: Attack lunge**
+```lua
+if inputs.attack then
     self.state._animation = { x = 30, y = 0, speed = 300 }
 else
     self.state._animation = { x = 0, y = 0, speed = 200 }
 end
 ```
 
-### Example: Monster Hit Animation
+---
+
+## USB Development
+
+Global `usb` table provides complete USB communication API.
+
+### Device Enumeration
 
 ```lua
--- Monster recoils when hit
-if inputs.attack_event then
-    self.state._animation = { x = -20, y = 0, speed = 400 }
-elseif is_dead then
-    -- Sink when dead
-    self.state._animation = { x = 0, y = 30, speed = 100 }
-else
-    self.state._animation = { x = 0, y = 0, speed = 200 }
+local devices = usb.devices()
+for i, dev in ipairs(devices) do
+    print(string.format("VID:%04X PID:%04X - %s",
+        dev.vendor_id, dev.product_id, dev.product or "Unknown"))
 end
 ```
 
-## Interactive Blocks
-
-Blocks can contain interactive widgets (input fields, buttons, etc.) by setting the `widget` property in `meta`.
-
-### Widget Types
-
-| widget value | Description | Use Case |
-|--------------|-------------|----------|
-| `textinput` | Text input field | User text input |
-| `password` | Password input | Password entry (masked) |
-| `textarea` | Multi-line text | Long text input |
-| `checkbox` | Checkbox | Toggle options |
-| `slider` | Slider | Numeric adjustment |
-| `button` | Button | Trigger events |
-
-### Extended meta Fields
-
+**Device info fields:**
 | Field | Type | Description |
 |-------|------|-------------|
-| `widget` | string | Widget type |
-| `placeholder` | string | Placeholder/hint text |
-| `options` | array | Dropdown options (for dropdown type) |
+| `vendor_id` | number | VID |
+| `product_id` | number | PID |
+| `bus_number` | number | Bus number |
+| `address` | number | Address |
+| `speed` | string | "low"/"full"/"high"/"super" |
+| `manufacturer` | string? | Manufacturer |
+| `product` | string? | Product name |
+| `serial_number` | string? | Serial number |
 
-### Example: Text Input Block
+### Opening Devices
 
 ```lua
+-- By VID/PID
+local device = usb.open(0x1234, 0x5678)
+
+-- By bus address
+local device = usb.open_by_address(1, 5)
+```
+
+### Data Transfer
+
+**Bulk transfer** (large data):
+```lua
+device:claim_interface(0)
+local n = device:write_bulk(0x01, "Hello", 1000)  -- endpoint, data, timeout_ms
+local result = device:read_bulk(0x81, 64, 1000)   -- endpoint, size, timeout_ms
+-- result.data, result.length
+```
+
+**Interrupt transfer** (small data/low latency):
+```lua
+device:write_interrupt(0x02, "\x01\x02", 100)
+local result = device:read_interrupt(0x82, 8, 100)
+```
+
+**Control transfer**:
+```lua
+local result = device:read_control({
+    request_type = usb.request_type("in", "vendor", "device"),
+    request = 0x01, value = 0, index = 0, size = 64, timeout = 1000
+})
+```
+
+### Interface Management
+
+```lua
+device:set_auto_detach_kernel_driver(true)  -- Recommended
+device:claim_interface(0)
+-- ... transfer operations ...
+device:release_interface(0)
+```
+
+### USB Block Example
+```lua
 return {
-    meta = {
-        id = "input.text_input",
-        name = "Text Input",
-        category = "Input",
-        color = "#2196F3",
-        widget = "textinput",           -- Enable text input widget
-        placeholder = "Enter text..."   -- Placeholder
-    },
-
+    meta = { id = "usb.scanner", name = "USB Scanner", category = "USB", color = "#9C27B0" },
     outputs = {
-        { id = "value", name = "Text Value", type = "string", default = "" },
-        { id = "length", name = "Text Length", type = "number", default = 0 }
+        { id = "devices", name = "Device List", type = "table" },
+        { id = "count", name = "Count", type = "number" }
     },
-
     execute = function(self, inputs)
-        -- Widget value auto-synced to output value port
-        local text = self.state.widget_text or ""
-        return {
-            value = text,
-            length = string.len(text)
-        }
+        local devices = usb.devices()
+        return { devices = devices, count = #devices }
     end
 }
 ```
 
-### Example: Password Input Block
+### Error Handling
 
+Wrap USB operations with `pcall`:
 ```lua
-return {
-    meta = {
-        id = "input.password",
-        name = "Password Input",
-        color = "#FF5722",
-        widget = "password",
-        placeholder = "Enter password..."
-    },
+local ok, result = pcall(function()
+    local device = usb.open(0x1234, 0x5678)
+    device:claim_interface(0)
+    return device:read_bulk(0x81, 64, 1000)
+end)
 
-    properties = {
-        { id = "min_length", name = "Min Length", type = "number", default = 6 }
-    },
-
-    outputs = {
-        { id = "value", name = "Password", type = "string", default = "" },
-        { id = "is_valid", name = "Valid", type = "boolean", default = false }
-    },
-
-    execute = function(self, inputs)
-        local password = self.state.widget_text or ""
-        local min_len = self.properties.min_length or 6
-        return {
-            value = password,
-            is_valid = string.len(password) >= min_len
-        }
-    end
-}
+if ok then print("OK: " .. result.length)
+else print("Error: " .. tostring(result)) end
 ```
 
-### Example: Button Block
+**Common errors:**
+| Error | Solution |
+|-------|----------|
+| Device not found | Check VID/PID and connection |
+| Access denied | Linux: udev rules; Windows: Zadig |
+| Resource busy | Detach kernel driver |
+| Timeout | Increase timeout |
+
+### Platform Notes
+
+**Linux** - Create `/etc/udev/rules.d/99-usb.rules`:
+```
+SUBSYSTEM=="usb", ATTR{idVendor}=="1234", MODE="0666"
+```
+
+**Windows** - Use [Zadig](https://zadig.akeo.ie/) to install WinUSB driver
+
+**macOS** - Use `set_auto_detach_kernel_driver(true)`
+
+---
+
+## Best Practices
+
+### Naming Conventions
+
+| Type | Convention | Example |
+|------|------------|---------|
+| meta.id | `category.name` | `game.attack`, `util.counter` |
+| port id | lowercase_underscore | `attack_power`, `is_valid` |
+| property id | lowercase_underscore | `max_hp`, `crit_rate` |
+
+### Code Style
 
 ```lua
-return {
-    meta = {
-        id = "input.button",
-        name = "Button",
-        color = "#4CAF50",
-        widget = "button",
-        placeholder = "Click"
-    },
+-- ✅ Good: early return, less nesting
+execute = function(self, inputs)
+    if not inputs.trigger then return { result = 0 } end
+    return { result = inputs.value * 2 }
+end
 
-    outputs = {
-        { id = "clicked", name = "Clicked", type = "event" },
-        { id = "click_count", name = "Click Count", type = "number", default = 0 }
-    },
-
-    execute = function(self, inputs)
-        local state = self.state or {}
-        local count = state.click_count or 0
-        local was_checked = state.last_checked or false
-        local is_checked = self.state.widget_checked or false
-
-        local clicked = is_checked and not was_checked
-        if clicked then
-            count = count + 1
+-- ❌ Bad: excessive nesting
+execute = function(self, inputs)
+    if inputs.trigger then
+        if inputs.value then
+            return { result = inputs.value * 2 }
         end
-
-        state.click_count = count
-        state.last_checked = is_checked
-        self.state = state
-
-        return {
-            clicked = clicked and true or nil,
-            click_count = count
-        }
     end
-}
+    return { result = 0 }
+end
 ```
 
-## Layer System
+### Performance Tips
 
-Workflows support multiple layers. Each layer is an independent region of the canvas. Switching layers auto-navigates the viewport.
+1. **Cache computed results** - Store unchanging data in `self.state`
+2. **Avoid creating large tables in execute** - Reuse existing tables
+3. **Reuse USB devices** - Cache opened devices in state
+4. **Remove print calls** - Remove debug output in production
 
-- **New Layer**: Click "+" in the layer panel
-- **Switch Layer**: Click layer name
-- **Rename**: Double-click layer name
-- **Delete**: Click "×" next to layer name
+### File Encoding
 
-Layer info is persisted in workflow files.
+Supports UTF-8 and GBK, auto-detected. UTF-8 recommended.
 
-## File Formats
+---
 
-| Extension | Description | Use Case |
-|-----------|-------------|----------|
+## Appendix: Directory Structure
+
+```
+scripts/
+├── game/        # Game entities
+├── lite/        # Lite RPG
+├── logic/       # Logic control
+├── math/        # Math operations
+├── input/       # Interactive input
+├── usb/         # USB devices
+├── event/       # Events
+├── util/        # Utilities
+└── debug/       # Debug
+```
+
+## Appendix: File Formats
+
+| Extension | Format | Use Case |
+|-----------|--------|----------|
 | `.L` | Plain JSON | Development |
-| `.LZ` | AES encrypted | Tamper protection |
-| `.dist.L` | Plain read-only | Distribution |
-| `.dist.LZ` | Encrypted read-only | Release |
-
+| `.LZ` | AES encrypted | Source protection |
+| `.lpack` | Encrypted package | Standalone distribution |

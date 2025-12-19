@@ -1,80 +1,101 @@
 # WorkflowEngine
 
-Visual node-based game logic editor + standalone player. Connect blocks instead of writing code, extend with Lua scripts.
+[中文](README.md) | [Русский](README_RU.md) | English
 
-## What is this
+<p align="center">
+  <strong>Visual Node Editor + Standalone Runtime</strong><br>
+  Connect blocks instead of code, extend everything with Lua
+</p>
 
-A tool for building game logic by dragging nodes and connecting ports, plus a standalone player for distributing games.
+---
 
-Core idea: break down game logic into Blocks (nodes), each Block is a Lua script, Blocks pass data through connections. Use it for:
+## ✨ Features
 
-- Turn-based battle systems
-- Idle/clicker games
-- Skill/Buff calculations
-- State machines
-- Any logic that can be represented as data flow
+- **Zero-code editing** - Drag nodes, connect ports, WYSIWYG
+- **Lua script extension** - Each Block is a Lua script, hot-reloadable
+- **Standalone publishing** - One-click export to encrypted game package with player
+- **Cross-platform** - macOS (ARM/Intel) + Windows
+- **USB device support** - Built-in complete USB communication API
 
-## Screenshot
+## 📸 Screenshot
 
 <img width="1403" height="863" alt="image" src="https://github.com/user-attachments/assets/7201603f-72a7-4035-b66b-c1bc7106df32" />
 
 https://github.com/user-attachments/assets/08793b5b-d584-44a1-b641-9e8912ce3061
 
-## Download
+## 📦 Download
 
-Get from [Releases](https://github.com/LegnaOS/workflow-game/releases):
+Get the latest version from [Releases](https://github.com/LegnaOS/workflow-game/releases):
 
-| File | Description |
-|------|-------------|
-| `workflow_engine-*-macos-arm64.tar.gz` | macOS Apple Silicon |
-| `workflow_engine-*-macos-x64.tar.gz` | macOS Intel |
-| `workflow_engine-*-windows-x64.zip` | Windows 64-bit |
+| Platform | File |
+|----------|------|
+| macOS Apple Silicon | `workflow_engine-*-macos-arm64.tar.gz` |
+| macOS Intel | `workflow_engine-*-macos-x64.tar.gz` |
+| Windows x64 | `workflow_engine-*-windows-x64.zip` |
 
-Each package contains:
-- `workflow_engine` - IDE editor
-- `workflow_player` - Standalone player
-- `scripts/` - Preset scripts
-- `workflows/` - Example workflows
+**Package contents:**
+```
+├── workflow_engine    # IDE editor
+├── workflow_player    # Standalone player
+├── scripts/           # Block script library
+├── workflows/         # Example workflows
+└── docs/              # Development docs
+```
 
-## Quick Start
+## 🚀 Quick Start
 
-### Using IDE
+### Editing Workflows
 
-1. Download and extract package for your platform
-2. Run `workflow_engine`
-3. Double-click blocks in left panel to add
-4. Drag ports to create connections
-5. Edit properties in right panel
-6. `Ctrl+S` save, `Ctrl+O` open
+```
+1. Run workflow_engine
+2. Double-click Blocks in left panel to add to canvas
+3. Drag from port to another port to connect
+4. Edit Block properties in right panel
+5. Click "▶ Run" to preview
+```
 
-### Publish Game
+**Shortcuts:**
+| Action | Shortcut |
+|--------|----------|
+| Save | `Ctrl/Cmd + S` |
+| Open | `Ctrl/Cmd + O` |
+| Undo | `Ctrl/Cmd + Z` |
+| Redo | `Ctrl/Cmd + Shift + Z` |
+| Delete | `Delete / Backspace` |
+| Box select | Drag on empty area |
+| Pan | `Space + drag` or middle-click drag |
+| Zoom | Scroll wheel |
 
-1. Design your workflow in IDE
-2. Click "📦 Publish" in toolbar
-3. Enter game name and choose directory
-4. Auto-generates:
-   - `GameName_publish/` folder
-   - `workflow_player` player
-   - `GameName.lpack` encrypted game package
+### Publishing Games
 
-### Run Game
+```
+1. Click "📦 Publish" in toolbar
+2. Enter game name
+3. Choose save directory
+```
 
-1. Put `workflow_player` and `.lpack` in same directory
-2. Double-click `workflow_player`
-3. Shows selection UI when multiple games present
+**Output structure:**
+```
+GameName_publish/
+├── workflow_player    # Player (standalone executable)
+└── GameName.lpack     # Encrypted game package
+```
 
-## File Formats
+Distribute the entire folder. Users double-click `workflow_player` to run.
 
-| Extension | Description | Use Case |
-|-----------|-------------|----------|
-| `.L` | Plain JSON | Development |
-| `.LZ` | AES encrypted | Source protection |
-| `.lpack` | Encrypted package | Standalone distribution |
+## 📄 File Formats
 
-## Custom Blocks
+| Extension | Format | Use Case |
+|-----------|--------|----------|
+| `.L` | Plain JSON | Development, version control |
+| `.LZ` | AES-128 encrypted | Source protection |
+| `.lpack` | Encrypted package | Standalone distribution (includes scripts) |
 
-Blocks are Lua scripts. Drop in `scripts/` directory, auto-loaded with hot reload.
+## 🧩 Custom Blocks
 
+Blocks are Lua scripts. Drop into `scripts/` directory, auto-loaded with hot reload.
+
+**Minimal example:**
 ```lua
 return {
     meta = {
@@ -95,51 +116,34 @@ return {
 }
 ```
 
-See [docs/BLOCK_DEVELOPMENT_EN.md](docs/BLOCK_DEVELOPMENT_EN.md) for details.
+**Full documentation:** [docs/BLOCK_DEVELOPMENT_EN.md](docs/BLOCK_DEVELOPMENT_EN.md)
 
-## Built-in Scripts
+## 📚 Built-in Script Library
 
 ```
 scripts/
-├── lite/          # Lite RPG Idle Game
-│   ├── hero       # Hero
-│   ├── boss       # Boss
-│   ├── weapon     # Weapon
-│   ├── armor      # Armor
-│   ├── skill      # Skill
-│   └── gem_*      # Gems (attack/crit/dodge)
-├── game/          # Game Core
-│   ├── character  # Character
-│   ├── monster    # Monster
-│   ├── attack     # Attack calculation
-│   └── ...
-├── logic/         # Logic Control
-│   ├── branch     # Conditional branch
-│   ├── compare    # Comparison
-│   └── selector   # Selector
-├── math/          # Math
-│   ├── add        # Addition
-│   ├── multiply   # Multiplication
-│   └── calc       # Expression
-├── input/         # Interactive Input
-│   ├── text_input # Text box
-│   ├── password   # Password box
-│   └── button     # Button
-└── util/          # Utility
-    ├── splitter   # Splitter
-    ├── merger     # Merger
-    └── switch     # Switch
+├── game/        # Game entities (character, monster, attack)
+├── lite/        # Lite RPG (hero, boss, equipment, skills)
+├── logic/       # Logic control (branch, compare, selector)
+├── math/        # Math operations (add, multiply, expression)
+├── input/       # Interactive input (textbox, button, password)
+├── usb/         # USB devices (scan, read/write, control transfer)
+├── event/       # Events (start, print)
+├── util/        # Utilities (splitter, merger, switch)
+└── debug/       # Debug (logger)
 ```
 
-## Building
+## 🔧 Building from Source
 
-Requires Rust 1.70+
+**Requirements:**
+- Rust 1.70+
+- Cross-compilation requires appropriate toolchains
 
 ```bash
-# Development
+# Development run
 cargo run
 
-# Build IDE and Player
+# Release build
 cargo build --release
 
 # Output
@@ -147,38 +151,49 @@ target/release/workflow_engine  # IDE
 target/release/workflow_player  # Player
 ```
 
-## Project Structure
+**Multi-platform build script:**
+```bash
+./build.sh  # Builds macOS + Windows, outputs to dist/
+```
+
+## 🏗 Project Structure
 
 ```
 src/
-├── main.rs           # IDE entry
-├── player.rs         # Player entry
-├── app.rs            # Main app logic
-├── script/           # Lua engine
-│   ├── parser.rs     # Script parsing
-│   ├── registry.rs   # Block registry
-│   └── loader.rs     # Encoding handling
-├── workflow/         # Core workflow
-│   ├── graph.rs      # Graph structure
-│   ├── block.rs      # Block definition
-│   ├── connection.rs # Connections
-│   ├── package.rs    # Game package format
-│   └── storage.rs    # File storage
-└── ui/               # UI components
-    ├── canvas.rs     # Canvas
-    ├── block_widget.rs
-    └── connection_widget.rs
+├── main.rs              # IDE entry
+├── player.rs            # Player entry
+├── app.rs               # Main app (2000+ lines core logic)
+├── script/
+│   ├── parser.rs        # Lua script parsing
+│   ├── registry.rs      # Block registry
+│   ├── executor.rs      # Execution engine
+│   └── loader.rs        # Encoding detection (UTF-8/GBK)
+├── workflow/
+│   ├── graph.rs         # Workflow graph structure
+│   ├── block.rs         # Block definition + dynamic ports
+│   ├── connection.rs    # Connections
+│   ├── package.rs       # .lpack game package
+│   └── storage.rs       # File I/O + encryption
+├── ui/
+│   ├── canvas.rs        # Infinite canvas
+│   ├── block_widget.rs  # Block rendering
+│   └── connection_widget.rs  # Connection rendering
+└── usb/
+    ├── lua_bindings.rs  # USB Lua API
+    └── types.rs         # USB type definitions
 ```
 
-## Tech Stack
+## 🛠 Tech Stack
 
-- **Rust** - Core language
-- **egui/eframe** - Immediate mode GUI
-- **mlua** - Lua 5.4 bindings
-- **aes/cbc** - AES-128-CBC encryption
-- **serde** - Serialization
+| Component | Technology |
+|-----------|------------|
+| Language | Rust |
+| GUI | egui / eframe |
+| Scripting | mlua (Lua 5.4) |
+| Encryption | AES-128-CBC |
+| USB | rusb / libusb |
+| Serialization | serde + serde_json |
 
-## License
+## 📜 License
 
 MIT
-
