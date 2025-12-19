@@ -197,6 +197,10 @@ impl WorkflowExecutor {
                     block.output_values.insert(key, value);
                 }
 
+                // 更新动态输出端口并重新计算尺寸
+                block.update_dynamic_outputs(definition);
+                block.recalculate_size(definition);
+
                 // 从self.state中获取更新后的state
                 if let Ok(updated_state) = self_table.get::<Table>("state") {
                     for pair in updated_state.pairs::<String, LuaValue>() {

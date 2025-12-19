@@ -1,6 +1,6 @@
 //! Block实例 - 画布上的节点
 
-use crate::script::{BlockDefinition, Value};
+use crate::script::{BlockDefinition, DataType, PortDefinition, Value};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use uuid::Uuid;
@@ -81,6 +81,10 @@ pub struct Block {
     /// 滑块值
     #[serde(default)]
     pub widget_slider_value: f32,
+
+    /// 动态输出端口（运行时生成）
+    #[serde(default)]
+    pub dynamic_outputs: Vec<PortDefinition>,
 }
 
 impl Block {
@@ -124,7 +128,90 @@ impl Block {
             widget_selected_index: 0,
             widget_checked: false,
             widget_slider_value: 0.0,
+            dynamic_outputs: Vec::new(),
         }
+    }
+
+    /// 获取所有输出端口（静态 + 动态）
+    pub fn all_outputs<'a>(&'a self, definition: &'a BlockDefinition) -> Vec<&'a PortDefinition> {
+        let mut outputs: Vec<&PortDefinition> = definition.outputs.iter().collect();
+        outputs.extend(self.dynamic_outputs.iter());
+        outputs
+    }
+
+    /// 更新动态输出端口（根据执行结果）
+    pub fn update_dynamic_outputs(&mut self, definition: &BlockDefinition) {
+        // 收集所有静态输出端口 ID
+        let static_ids: std::collections::HashSet<_> =
+            definition.outputs.iter().map(|p| p.id.as_str()).collect();
+
+        // 找出 output_values 中不在静态端口中的 key
+        let mut new_dynamic: Vec<PortDefinition> = Vec::new();
+        for (key, value) in &self.output_values {
+            if !static_ids.contains(key.as_str()) {
+                // 推断数据类型
+                let data_type = match value {
+                    Value::Number(_) => DataType::Number,
+                    Value::String(_) => DataType::String,
+                    Value::Boolean(_) => DataType::Boolean,
+                    Value::Array(_) => DataType::Array,
+                    _ => DataType::Any,
+                };
+                new_dynamic.push(PortDefinition {
+                    id: key.clone(),
+                    name: key.clone(),
+                    data_type,
+                    default: Value::Nil,
+                    description: String::new(),
+                    required: false,
+                    multiple: false,
+                    element_type: None,
+                    min: None,
+                    max: None,
+                });
+            }
+        }
+
+        // 按 id 排序保持稳定顺序
+        new_dynamic.sort_by(|a, b| a.id.cmp(&b.id));
+        self.dynamic_outputs = new_dynamic;
+    }
+
+    /// 重新计算 Block 尺寸（考虑动态端口）
+    pub fn recalculate_size(&mut self, definition: &BlockDefinition) {
+        let total_outputs = definition.outputs.len() + self.dynamic_outputs.len();
+        let port_count = definition.inputs.len().max(total_outputs);
+        let header_height = 28.0;
+        let port_height = 22.0;
+        let min_height = 60.0;
+        let calculated_height = header_height + (port_count as f32 * port_height);
+        self.size.y = calculated_height.max(min_height);
+
+        // 计算宽度（考虑动态端口名称）
+        let base_width: f32 = 140.0;
+        let name_width = definition.meta.name.chars().count() as f32 * 10.0 + 20.0;
+        let max_input_len = definition
+            .inputs
+            .iter()
+            .map(|p| p.name.chars().count())
+            .max()
+            .unwrap_or(0) as f32;
+        let max_static_output_len = definition
+            .outputs
+            .iter()
+            .map(|p| p.name.chars().count())
+            .max()
+            .unwrap_or(0) as f32;
+        let max_dynamic_output_len = self
+            .dynamic_outputs
+            .iter()
+            .map(|p| p.name.chars().count())
+            .max()
+            .unwrap_or(0) as f32;
+        let max_output_len = max_static_output_len.max(max_dynamic_output_len);
+        let port_width = (max_input_len + max_output_len) * 7.0 + 60.0;
+
+        self.size.x = base_width.max(name_width).max(port_width);
     }
 
     /// 更新动画（每帧调用）

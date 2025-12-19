@@ -1,12 +1,13 @@
 -- USB 设备扫描器 Block
 -- 扫描并列出所有连接的 USB 设备
+-- 使用动态端口为每个设备生成独立的 VID/PID 输出
 
 return {
     meta = {
         id = "usb.device_scanner",
         name = "USB 设备扫描",
         category = "USB",
-        description = "扫描并列出所有 USB 设备，可按 VID/PID 过滤",
+        description = "扫描所有 USB 设备，动态生成每个设备的 VID/PID 输出端口",
         color = "#9C27B0"
     },
 
@@ -19,14 +20,12 @@ return {
         { id = "trigger", name = "触发", type = "event" }
     },
 
+    -- 静态输出端口（设备数量）
     outputs = {
-        { id = "devices", name = "设备列表", type = "table" },
-        { id = "count", name = "设备数量", type = "number" },
-        { id = "first", name = "第一个设备", type = "table" }
+        { id = "count", name = "设备数量", type = "number" }
     },
 
     execute = function(self, inputs)
-        -- 防御性检查：确保 self 和 properties 存在
         local props = (self and self.properties) or {}
         local all_devices = usb.devices()
         local filtered = {}
@@ -53,26 +52,27 @@ return {
             end
             if match then
                 table.insert(filtered, {
-                    bus = dev.bus_number,
-                    address = dev.address,
-                    vid = dev.vendor_id,
-                    pid = dev.product_id,
-                    vid_hex = string.format("%04X", dev.vendor_id or 0),
-                    pid_hex = string.format("%04X", dev.product_id or 0),
-                    manufacturer = dev.manufacturer,
-                    product = dev.product,
-                    serial = dev.serial_number,
-                    speed = dev.speed,
-                    class = dev.class_code
+                    vid = dev.vendor_id or 0,
+                    pid = dev.product_id or 0,
+                    name = dev.product or dev.manufacturer or "Unknown"
                 })
             end
         end
 
-        return {
-            devices = filtered,
-            count = #filtered,
-            first = filtered[1] or {}
+        -- 构建动态输出
+        local result = {
+            count = #filtered
         }
+
+        -- 为每个设备生成动态端口
+        for i, dev in ipairs(filtered) do
+            local prefix = "dev" .. i .. "_"
+            result[prefix .. "vid"] = dev.vid
+            result[prefix .. "pid"] = dev.pid
+            result[prefix .. "name"] = dev.name
+        end
+
+        return result
     end
 }
 

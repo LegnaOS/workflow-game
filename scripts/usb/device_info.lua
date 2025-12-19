@@ -1,27 +1,29 @@
 -- USB 设备信息 Block
--- 获取 USB 设备的详细描述符信息
+-- 根据 VID/PID 打开设备并获取详细信息
 
 return {
     meta = {
         id = "usb.device_info",
         name = "USB 设备信息",
         category = "USB",
-        description = "获取 USB 设备的详细描述符信息",
+        description = "根据 VID/PID 获取 USB 设备详细信息",
         color = "#9C27B0"
     },
 
     properties = {
-        { id = "vid", name = "VID (十六进制)", type = "string", default = "0000" },
-        { id = "pid", name = "PID (十六进制)", type = "string", default = "0000" }
+        { id = "vid_prop", name = "VID (十六进制)", type = "string", default = "" },
+        { id = "pid_prop", name = "PID (十六进制)", type = "string", default = "" }
     },
 
     inputs = {
+        { id = "vid", name = "VID", type = "number" },
+        { id = "pid", name = "PID", type = "number" },
         { id = "trigger", name = "触发", type = "event" }
     },
 
     outputs = {
-        { id = "descriptor", name = "设备描述符", type = "table" },
-        { id = "config", name = "配置描述符", type = "table" },
+        { id = "vid_hex", name = "VID", type = "string" },
+        { id = "pid_hex", name = "PID", type = "string" },
         { id = "manufacturer", name = "制造商", type = "string" },
         { id = "product", name = "产品名", type = "string" },
         { id = "serial", name = "序列号", type = "string" },
@@ -30,45 +32,44 @@ return {
     },
 
     execute = function(self, inputs)
-        -- 防御性检查
         local props = (self and self.properties) or {}
 
-        local vid = tonumber(props.vid, 16) or 0
-        local pid = tonumber(props.pid, 16) or 0
+        -- 优先使用连接输入，否则用属性
+        local vid = inputs.vid
+        local pid = inputs.pid
 
-        -- 打开设备
+        if (not vid or vid == 0) and props.vid_prop and props.vid_prop ~= "" then
+            vid = tonumber(props.vid_prop, 16)
+        end
+        if (not pid or pid == 0) and props.pid_prop and props.pid_prop ~= "" then
+            pid = tonumber(props.pid_prop, 16)
+        end
+
+        if not vid or not pid or vid == 0 or pid == 0 then
+            return {
+                vid_hex = "", pid_hex = "", manufacturer = "", product = "",
+                serial = "", success = false,
+                error = "未指定设备（请连接 VID/PID 输入或在属性中设置）"
+            }
+        end
+
+        -- 尝试打开设备
         local ok, device = pcall(usb.open, vid, pid)
         if not ok then
             return {
-                descriptor = {},
-                config = {},
-                manufacturer = "",
-                product = "",
-                serial = "",
+                vid_hex = string.format("%04X", vid),
+                pid_hex = string.format("%04X", pid),
+                manufacturer = "", product = "", serial = "",
                 success = false,
                 error = "无法打开设备: " .. tostring(device)
             }
         end
 
-        local out_descriptor = {}
-        local out_config = {}
         local out_manufacturer = ""
         local out_product = ""
         local out_serial = ""
 
-        -- 获取设备描述符
-        local ok, desc = pcall(function() return device:descriptor() end)
-        if ok then
-            out_descriptor = desc
-        end
-
-        -- 获取配置描述符
-        local ok, config = pcall(function() return device:config() end)
-        if ok then
-            out_config = config
-        end
-
-        -- 获取字符串描述符
+        -- 尝试读取字符串描述符
         local ok, mfr = pcall(function() return device:manufacturer() end)
         if ok and mfr then out_manufacturer = mfr end
 
@@ -78,12 +79,11 @@ return {
         local ok, serial = pcall(function() return device:serial_number() end)
         if ok and serial then out_serial = serial end
 
-        -- 关闭设备
         pcall(function() device:close() end)
 
         return {
-            descriptor = out_descriptor,
-            config = out_config,
+            vid_hex = string.format("%04X", vid),
+            pid_hex = string.format("%04X", pid),
             manufacturer = out_manufacturer,
             product = out_product,
             serial = out_serial,

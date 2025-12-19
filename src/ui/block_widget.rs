@@ -107,8 +107,9 @@ impl BlockWidget {
             Self::draw_port(painter, port_pos, &input.name, value, &input.data_type, true, viewport.zoom);
         }
 
-        // 输出端口(右侧)
-        for (i, output) in definition.outputs.iter().enumerate() {
+        // 输出端口(右侧) - 静态 + 动态
+        let all_outputs = block.all_outputs(definition);
+        for (i, output) in all_outputs.iter().enumerate() {
             let y = port_y_start + (i as f32 + 0.5) * Self::PORT_HEIGHT * viewport.zoom;
             let port_pos = Pos2::new(pos.x + size.x, y);
             let value = block.output_values.get(&output.id);
