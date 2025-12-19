@@ -8,6 +8,7 @@
 
 mod script;
 mod ui;
+mod usb;
 mod workflow;
 
 use script::{BlockDefinition, ScriptParser, Value};
@@ -59,7 +60,10 @@ pub struct MemoryExecutor {
 
 impl MemoryExecutor {
     pub fn new() -> Result<Self> {
-        Ok(Self { lua: Lua::new() })
+        let lua = Lua::new();
+        // 注册 USB 模块
+        usb::register_usb_module(&lua).map_err(|e| anyhow!("注册USB模块失败: {}", e))?;
+        Ok(Self { lua })
     }
 
     pub fn execute_all(&self, workflow: &mut Workflow, registry: &MemoryRegistry) -> Result<()> {

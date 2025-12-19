@@ -1,7 +1,7 @@
 #!/bin/bash
 # 多平台构建脚本
 # 用法: ./build.sh [target]
-# 支持: mac, mac-intel, windows, all
+# 支持: mac, mac-intel, windows, all, release, bump
 
 set -e
 
@@ -13,11 +13,13 @@ DIST_DIR="dist"
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
 NC='\033[0m'
 
 log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
+log_step() { echo -e "${BLUE}[STEP]${NC} $1"; }
 
 # 从 Cargo.toml 读取当前版本
 get_version() {
@@ -42,10 +44,8 @@ update_cargo_version() {
     log_info "版本更新: $old_version -> $new_version"
 }
 
-# 获取并递增版本
-OLD_VERSION=$(get_version)
-VERSION=$(increment_version "$OLD_VERSION")
-update_cargo_version "$VERSION" "$OLD_VERSION"
+# 读取当前版本（不自动递增）
+VERSION=$(get_version)
 
 # 创建发布包
 create_package() {
@@ -182,10 +182,70 @@ build_windows() {
     create_package "x86_64-pc-windows-gnu" "windows-x64" "${APP_NAME}.exe" "${PLAYER_NAME}.exe"
 }
 
+# Git 提交并推送
+git_commit_and_push() {
+    local message=$1
+    log_info "提交代码..."
+    git add -A
+    git commit -m "$message" || log_warn "无新内容需要提交"
+    git push origin main
+    log_info "代码已推送到 main"
+}
+
+# 创建 GitHub Release
+create_release() {
+    log_info "创建 GitHub Release v${VERSION}..."
+
+    # 检查 gh CLI
+    if ! command -v gh &> /dev/null; then
+        log_error "需要安装 GitHub CLI: brew install gh"
+        return 1
+    fi
+
+    # 收集要上传的文件
+    local files=()
+    for f in "$DIST_DIR"/*-${VERSION}-*.{tar.gz,zip}; do
+        [[ -f "$f" ]] && files+=("$f")
+    done
+
+    if [[ ${#files[@]} -eq 0 ]]; then
+        log_error "找不到要上传的文件"
+        return 1
+    fi
+
+    log_info "上传文件: ${files[*]}"
+
+    # 创建 release
+    gh release create "v${VERSION}" \
+        --title "v${VERSION}" \
+        --notes "## v${VERSION}
+
+### 下载
+
+| 文件 | 说明 |
+|------|------|
+| \`workflow_engine-${VERSION}-macos-arm64.tar.gz\` | macOS Apple Silicon |
+| \`workflow_engine-${VERSION}-macos-x64.tar.gz\` | macOS Intel |
+| \`workflow_engine-${VERSION}-windows-x64.zip\` | Windows 64位 |
+
+每个压缩包包含 IDE、播放器、预设脚本和示例工作流。" \
+        "${files[@]}"
+
+    log_info "✓ Release v${VERSION} 创建成功"
+}
+
+# 递增版本并更新
+bump_version() {
+    local old=$(get_version)
+    local new=$(increment_version "$old")
+    update_cargo_version "$new" "$old"
+    VERSION="$new"
+}
+
 # 主函数
 main() {
     mkdir -p "$DIST_DIR"
-    
+
     case "${1:-all}" in
         mac|mac-arm)
             build_mac_arm
@@ -197,19 +257,56 @@ main() {
             build_windows
             ;;
         all)
-            log_info "=== 构建所有平台 ==="
+            log_info "=== 构建所有平台 v${VERSION} ==="
             build_mac_arm
             build_mac_intel
             build_windows
             ;;
+        bump)
+            log_info "=== 递增版本号 ==="
+            bump_version
+            log_info "新版本: v${VERSION}"
+            ;;
+        release)
+            log_step "=== 发布流程 v${VERSION} ==="
+            log_step "[1/5] 构建 macOS ARM64..."
+            build_mac_arm
+            log_step "[2/5] 构建 macOS Intel..."
+            build_mac_intel
+            log_step "[3/5] 构建 Windows..."
+            build_windows
+            log_step "[4/5] 提交代码..."
+            git_commit_and_push "chore: release v${VERSION}"
+            log_step "[5/5] 创建 GitHub Release..."
+            create_release
+            log_info "🎉 发布完成: v${VERSION}"
+            ;;
+        release-only)
+            log_info "=== 仅发布（不构建）==="
+            git_commit_and_push "chore: release v${VERSION}"
+            create_release
+            ;;
         *)
-            echo "用法: $0 [mac|mac-intel|windows|all]"
+            echo "用法: $0 [mac|mac-intel|windows|all|bump|release|release-only]"
+            echo ""
+            echo "构建命令:"
+            echo "  mac         - 仅构建 macOS ARM64"
+            echo "  mac-intel   - 仅构建 macOS Intel"
+            echo "  windows     - 仅构建 Windows"
+            echo "  all         - 构建所有平台（默认）"
+            echo ""
+            echo "发布命令:"
+            echo "  bump        - 递增 patch 版本号"
+            echo "  release     - 构建所有平台 + 提交 + 发布 GitHub Release"
+            echo "  release-only - 仅提交 + 发布（使用已有构建产物）"
+            echo ""
+            echo "当前版本: v${VERSION}"
             exit 1
             ;;
     esac
-    
-    log_info "=== 构建完成 ==="
-    ls -la "$DIST_DIR"/*.{tar.gz,zip} 2>/dev/null || true
+
+    log_info "=== 完成 ==="
+    ls -la "$DIST_DIR"/*-${VERSION}-*.{tar.gz,zip} 2>/dev/null || true
 }
 
 main "$@"

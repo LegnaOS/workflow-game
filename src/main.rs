@@ -3,6 +3,7 @@
 mod app;
 mod script;
 mod ui;
+mod usb;
 mod workflow;
 
 use app::WorkflowApp;

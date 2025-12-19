@@ -1,6 +1,7 @@
 //! 工作流执行引擎 - 实时执行Lua脚本
 
 use crate::script::{ScriptRegistry, Value};
+use crate::usb::register_usb_module;
 use crate::workflow::Workflow;
 use anyhow::{anyhow, Result};
 use mlua::{Lua, Table, Value as LuaValue};
@@ -20,6 +21,8 @@ pub struct WorkflowExecutor {
 impl WorkflowExecutor {
     pub fn new() -> Result<Self> {
         let lua = Lua::new();
+        // 注册 USB 模块
+        register_usb_module(&lua).map_err(|e| anyhow!("注册USB模块失败: {}", e))?;
         Ok(Self { lua })
     }
 
