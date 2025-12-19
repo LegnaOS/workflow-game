@@ -738,7 +738,8 @@ impl eframe::App for WorkflowApp {
                                         .default_open(true)
                                         .show(ui, |ui| {
                                             ui.spacing_mut().item_spacing.y = 2.0;
-                                            for output in &def.outputs {
+                                            let all_outputs = block.all_outputs(def);
+                                            for output in all_outputs {
                                                 if let Some(value) = block.output_values.get(&output.id) {
                                                     let val_str = Self::format_value_compact(value);
                                                     ui.horizontal_wrapped(|ui| {
@@ -863,7 +864,8 @@ impl eframe::App for WorkflowApp {
                                 None => continue,
                             };
 
-                            let from_idx = from_def.outputs.iter().position(|p| p.id == conn.from_port).unwrap_or(0);
+                            let all_outputs = from_block.all_outputs(from_def);
+                            let from_idx = all_outputs.iter().position(|p| p.id == conn.from_port).unwrap_or(0);
                             let to_idx = to_def.inputs.iter().position(|p| p.id == conn.to_port).unwrap_or(0);
 
                             let from_pos = if from_mode == BlockDisplayMode::Mini {
@@ -902,7 +904,8 @@ impl eframe::App for WorkflowApp {
                             None => continue,
                         };
 
-                        let from_idx = from_def.outputs.iter().position(|p| p.id == conn.from_port).unwrap_or(0);
+                        let all_outputs = from_block.all_outputs(from_def);
+                        let from_idx = all_outputs.iter().position(|p| p.id == conn.from_port).unwrap_or(0);
                         let to_idx = to_def.inputs.iter().position(|p| p.id == conn.to_port).unwrap_or(0);
 
                         let from_pos = BlockWidget::get_port_screen_pos(from_block, from_idx, true, &self.workflow.viewport, canvas_offset);
@@ -1624,7 +1627,8 @@ impl WorkflowApp {
                                 ) {
                                     if let Some(from_def) = self.registry.get(&from_block.script_id) {
                                         if let Some(to_def) = self.registry.get(&to_block.script_id) {
-                                            let from_idx = from_def.outputs.iter()
+                                            let all_outputs = from_block.all_outputs(from_def);
+                                            let from_idx = all_outputs.iter()
                                                 .position(|p| p.id == conn.from_port)
                                                 .unwrap_or(0);
                                             let to_idx = to_def.inputs.iter()
@@ -1717,8 +1721,9 @@ impl WorkflowApp {
                         });
                     }
                 }
-                // 检查输出端口
-                for (i, output) in def.outputs.iter().enumerate() {
+                // 检查输出端口（静态 + 动态）
+                let all_outputs = block.all_outputs(def);
+                for (i, output) in all_outputs.iter().enumerate() {
                     let port_pos = BlockWidget::get_port_screen_pos(
                         block, i, true, &self.workflow.viewport, canvas_offset
                     );
@@ -1758,7 +1763,8 @@ impl WorkflowApp {
                 _ => continue,
             };
 
-            let from_idx = from_def.outputs.iter()
+            let all_outputs = from_block.all_outputs(from_def);
+            let from_idx = all_outputs.iter()
                 .position(|p| p.id == conn.from_port)
                 .unwrap_or(0);
             let to_idx = to_def.inputs.iter()
